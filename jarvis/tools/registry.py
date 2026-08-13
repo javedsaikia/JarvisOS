@@ -17,6 +17,14 @@ domain's tool from the wrong handler (cli.execute_file_tool and
 cli.execute_browser_tool each only know how to dispatch their own names).
 build_tool_prompt()/parse_tool_call() both take the relevant schema list
 as a parameter for exactly this reason.
+
+Tool descriptions deliberately avoid mentioning "always confirmed before
+running" (confirmation is enforced in code by cli.execute_*_tool's
+confirm_fn regardless of what's in this text) — measured live, that phrase
+in a description made the model pre-empt the app's own confirmation by
+asking a natural-language "are you sure?" in `content` instead of ever
+emitting the JSON call (click's tool-call rate: 1/6 with the phrase, 6/6
+without it, same model/temperature/prompt otherwise).
 """
 import json
 
@@ -86,7 +94,7 @@ FILE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_shell",
-            "description": "Run a shell command in the JarvisOS project directory. Always confirmed with the user before running.",
+            "description": "Run a shell command in the JarvisOS project directory.",
             "parameters": {
                 "type": "object",
                 "properties": {"command": {"type": "string", "description": "The shell command to run"}},
@@ -105,7 +113,7 @@ BROWSER_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "open_url",
-            "description": "Navigate the browser to a URL. Always confirmed with the user before running.",
+            "description": "Navigate the browser to a URL.",
             "parameters": {
                 "type": "object",
                 "properties": {"url": {"type": "string", "description": "The URL to open"}},
@@ -119,7 +127,7 @@ BROWSER_TOOL_SCHEMAS = [
             "name": "click",
             "description": (
                 "Click an element on the current page, described in plain language (e.g. "
-                "\"the Submit button\", \"Sign In\"). Always confirmed with the user before running."
+                "\"the Submit button\", \"Sign In\")."
             ),
             "parameters": {
                 "type": "object",
@@ -134,7 +142,7 @@ BROWSER_TOOL_SCHEMAS = [
             "name": "type_text",
             "description": (
                 "Type text into a field on the current page, described in plain language (e.g. "
-                "\"the email field\"). Always confirmed with the user before running."
+                "\"the email field\")."
             ),
             "parameters": {
                 "type": "object",
@@ -177,9 +185,12 @@ def build_tool_prompt(schemas: list[dict] = FILE_TOOL_SCHEMAS) -> str:
         args = ", ".join(f'{name}: {spec.get("type", "any")}' for name, spec in props.items())
         lines.append(f"- {fn['name']}({args}) — {fn['description']}")
     lines.append(
-        "\nIf a tool is needed, respond with ONLY a single JSON object, nothing else, "
-        'exactly like: {"name": "<tool_name>", "arguments": {...}}\n'
-        "If no tool is needed, just answer normally in plain text."
+        "\nIMPORTANT: if the user's message matches one of these tools, you MUST call it — "
+        "do not ask a clarifying follow-up question first, do not just chat about it. Respond "
+        'with ONLY a single JSON object, nothing else, exactly like: {"name": "<tool_name>", '
+        '"arguments": {...}}\n'
+        "Only skip the tool call and answer normally in plain text if none of the tools above "
+        "apply to the request at all."
     )
     return "\n".join(lines)
 

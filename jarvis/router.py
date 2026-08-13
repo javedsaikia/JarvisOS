@@ -253,6 +253,14 @@ BROWSER_PATTERNS = [
     # after "go to" (a dot-TLD or a scheme) so plain "go to sleep"/"go to
     # the store" don't misfire.
     r"\bgo to\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
+    # Same gap, different verb — seen live: "open wikipedia.org in the
+    # browser" fell through to plain Ollama (which correctly declined
+    # rather than hallucinating, but still never navigated) because the
+    # existing "open ... url/website/webpage/link" pattern only matches
+    # those literal nouns, not a bare domain. Same URL-shape requirement
+    # as the "go to" pattern above so "open the calendar"/"open spotify"
+    # don't misfire.
+    r"\bopen\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
 ]
 
 FILES_PATTERNS = [

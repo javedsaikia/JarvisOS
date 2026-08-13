@@ -4,6 +4,7 @@ via --once for voice-pipeline integration.
 """
 import argparse
 import json
+import re
 import subprocess
 from typing import Callable
 
@@ -488,7 +489,15 @@ def handle_open_maps(user_text: str, cfg: dict, interactive: bool, confirm_fn=te
     if not cfg.get("location_enabled", True):
         return "Location features are disabled in config."
 
+    # MAPS_PATTERNS is deliberately referential ("open this/that/it in
+    # maps", bare "open maps") — the trigger phrase itself is never a real
+    # place name. Strip it so it doesn't get sent to Apple Maps as a
+    # literal (and nonsensical) search query — seen live: "open this in
+    # maps" was searching for the text "open this in maps".
     query = user_text.strip()
+    for pattern in router.MAPS_PATTERNS:
+        query = re.sub(pattern, "", query, flags=re.IGNORECASE).strip()
+
     lat = lon = None
     try:
         loc = location_client.get_location()
@@ -497,14 +506,15 @@ def handle_open_maps(user_text: str, cfg: dict, interactive: bool, confirm_fn=te
         pass  # Maps still works with just the query text, no coordinates.
 
     url = location.maps_url(query, lat, lon)
-    if interactive and not confirm_fn(f"Open Apple Maps for \"{query}\"?"):
+    prompt = f'Open Apple Maps for "{query}"?' if query else "Open Apple Maps near your current location?"
+    if interactive and not confirm_fn(prompt):
         return "Cancelled by user — Maps not opened."
 
     try:
         subprocess.run(["open", url], capture_output=True, timeout=10)
     except (subprocess.TimeoutExpired, OSError) as e:
         return f"(Could not open Maps: {e})"
-    return f'Opened Apple Maps for "{query}".'
+    return f'Opened Apple Maps for "{query}".' if query else "Opened Apple Maps near your current location."
 
 
 def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:

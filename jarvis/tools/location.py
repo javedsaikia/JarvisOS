@@ -77,7 +77,12 @@ def describe_nearby(category: str, radius_m: int = 3000) -> str:
 
 
 def maps_url(query: str, lat: float | None = None, lon: float | None = None) -> str:
-    params = {"q": query}
+    # query is often empty — "open this in maps"/"open maps" carry no place
+    # name of their own (see cli.handle_open_maps, which strips the trigger
+    # phrase itself before calling this). Omitting `q` rather than sending
+    # the trigger phrase as a literal search string opens a plain map
+    # centered on the current location instead of searching for nonsense.
+    params = {"q": query} if query else {}
     if lat is not None and lon is not None:
-        params["near"] = f"{lat},{lon}"
+        params["near" if query else "ll"] = f"{lat},{lon}"
     return "https://maps.apple.com/?" + urllib.parse.urlencode(params)
