@@ -26,7 +26,11 @@ DEFAULTS = {
     "voice_context_turns": 6,
     "voice_silence_seconds": 0.45,
     "voice_silence_rms_threshold": 300,
-    "voice_conversation_window_seconds": 180,
+    # Was 180 — seen live, a window that long meant any speech near the
+    # mic (e.g. dictating a message to something else entirely) got picked
+    # up as a JARVIS follow-up command for minutes after the last real
+    # exchange, with no wake word required to re-arm it.
+    "voice_conversation_window_seconds": 25,
     "vision_enabled": True,
     "vision_ollama_model": "moondream",
     "browser_enabled": True,
