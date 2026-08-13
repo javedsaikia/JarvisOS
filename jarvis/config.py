@@ -31,6 +31,7 @@ DEFAULTS = {
     # assistants sit and costs only a third of a second more per turn.
     "voice_silence_seconds": 0.8,
     "voice_no_speech_bail_seconds": 3.0,
+    "voice_wake_listen_seconds": 10.0,
     "voice_silence_rms_threshold": 300,
     # Was 180 — seen live, a window that long meant any speech near the
     # mic (e.g. dictating a message to something else entirely) got picked

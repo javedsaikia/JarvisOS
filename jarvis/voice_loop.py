@@ -74,6 +74,14 @@ CONFIRM_MAX_SECONDS = 6
 # is a bug, not a tuning problem. Real assistants give you a few seconds to
 # start talking and then quietly stand down.
 NO_SPEECH_BAIL_SECONDS = 3.0
+# ...but only for speculative listens (the follow-up window, where usually
+# nobody is there). Straight after a wake word the user has explicitly said
+# they want to talk, so cutting them off at 3s is wrong — that is what
+# "I say Hey Jarvis and it doesn't respond" actually was: the wake word
+# fired, the user paused to gather the sentence, and JARVIS had already
+# stopped listening with no cue that it ever started. Field-tested
+# Whisper-assistant configs sit around 12s before returning to idle.
+WAKE_LISTEN_SECONDS = 10.0
 # Word-boundary contains-match, not exact set membership — seen live:
 # exact matching missed "Hey stop!" (normalizes to "hey stop", which isn't
 # in the set) and sent it to Ollama as a normal query instead of
@@ -152,6 +160,40 @@ def _strip_leading_wake_phrase(text: str) -> str:
     """
     stripped = _LEADING_WAKE_PHRASE_RE.sub("", text.strip(), count=1)
     return stripped or text
+
+
+_ACK_TONE: np.ndarray | None = None
+
+
+def _ack_tone() -> np.ndarray:
+    """A short rising two-note chime, synthesized once and cached.
+
+    JARVIS had no way of telling the user it had started listening, so
+    after saying "Hey Jarvis" you were talking into a system whose state
+    you couldn't see — and if you paused first, it had already given up.
+    Siri, Alexa and Google all play a tone here for exactly this reason.
+    Generated with numpy rather than shipping an audio asset. Played
+    through sounddevice rather than tts.play(): that writes a temp file
+    and spawns afplay, measured at 1.32s for 160ms of audio, which would
+    put more delay in front of the user than the cue is worth. The already
+    open audio stack does the same job in 0.29s.
+    """
+    global _ACK_TONE
+    if _ACK_TONE is not None:
+        return _ACK_TONE
+
+    def note(freq: float, ms: int, amp: float = 0.22) -> np.ndarray:
+        n = int(SAMPLE_RATE * ms / 1000)
+        samples = np.sin(2 * np.pi * freq * np.arange(n) / SAMPLE_RATE) * amp
+        # Fade the edges or the discontinuity clicks audibly.
+        fade = min(int(SAMPLE_RATE * 0.008), n // 2)
+        if fade:
+            samples[:fade] *= np.linspace(0.0, 1.0, fade)
+            samples[-fade:] *= np.linspace(1.0, 0.0, fade)
+        return samples
+
+    _ACK_TONE = np.concatenate([note(660, 70), note(990, 90)]).astype(np.float32)
+    return _ACK_TONE
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -325,6 +367,7 @@ class VoiceLoop:
         self.silence_rms_threshold = cfg["voice_silence_rms_threshold"]
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
         self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
+        self.wake_listen_seconds = cfg.get("voice_wake_listen_seconds", WAKE_LISTEN_SECONDS)
         self.audio_q: queue.Queue = queue.Queue()
         self._last_frame_at = time.monotonic()
         self.wake_event = threading.Event()
@@ -479,7 +522,20 @@ class VoiceLoop:
                 stop_event.set()
                 return
 
-    def record_utterance(self, max_seconds: float = MAX_UTTERANCE_SECONDS) -> tuple[np.ndarray, bool]:
+    def _play_ack_tone(self) -> None:
+        try:
+            sd.play(_ack_tone(), SAMPLE_RATE, blocking=True)
+        except Exception:
+            return  # a missing chime must never take down a turn
+        # The tone is our own output, so make sure it can't survive in the
+        # pre-roll deque and get prepended to the user's utterance — the
+        # same path that made JARVIS's speech bleed into recordings.
+        with self._barge_frames_lock:
+            self._barge_frames.clear()
+
+    def record_utterance(
+        self, max_seconds: float = MAX_UTTERANCE_SECONDS, bail_seconds: float | None = None
+    ) -> tuple[np.ndarray, bool]:
         # Drain first: the InputStream callback queues frames continuously,
         # including the entire time JARVIS was mid-reply (LLM latency +
         # TTS playback, seen live running 20-40+ seconds). Nothing here
@@ -510,7 +566,9 @@ class VoiceLoop:
         silence_chunks = 0
         needed_silence_chunks = max(1, int(self.silence_seconds * SAMPLE_RATE / FRAME_SAMPLES))
         max_chunks = int(max_seconds * SAMPLE_RATE / FRAME_SAMPLES)
-        bail_chunks = max(1, int(self.no_speech_bail_seconds * SAMPLE_RATE / FRAME_SAMPLES))
+        if bail_seconds is None:
+            bail_seconds = self.no_speech_bail_seconds
+        bail_chunks = max(1, int(bail_seconds * SAMPLE_RATE / FRAME_SAMPLES))
         heard_speech = False
         max_rms = 0.0
         max_vad_prob = 0.0
@@ -552,6 +610,7 @@ class VoiceLoop:
             f"  (debug: {elapsed:.1f}s recorded, peak RMS {max_rms:.0f}, "
             f"peak VAD prob {max_vad_prob:.2f}, heard_speech={heard_speech})"
         )
+        self._last_peak_rms = max_rms
         recorded = np.concatenate(frames) if frames else np.array([], dtype=np.int16)
         return recorded, heard_speech
 
@@ -753,6 +812,11 @@ class VoiceLoop:
         turn_start = time.perf_counter()
         wake_detected_at = time.perf_counter()
         print(listening_banner)
+        if not already_in_conversation:
+            # Tell the user we're listening. Only on a fresh wake, not on
+            # follow-ups — a chime before every turn of a live conversation
+            # is noise, and that matches how Siri/Alexa/Google behave too.
+            self._play_ack_tone()
         # Paused for the whole turn — recording through the spoken reply —
         # not just the recording, since background music would otherwise
         # talk over JARVIS's own reply too. resume_after_conversation() in
@@ -773,17 +837,32 @@ class VoiceLoop:
         turn_start: float,
         wake_detected_at: float,
     ) -> str:
-        audio, heard_speech = self.record_utterance()
+        # Straight after a wake word the user has said they intend to
+        # speak, so wait properly for them; a follow-up listen is
+        # speculative and should give up quickly.
+        audio, heard_speech = self.record_utterance(
+            bail_seconds=None if already_in_conversation else self.wake_listen_seconds
+        )
         utterance_done_at = time.perf_counter()
-        # Skip Whisper entirely when the VAD is confident nothing was said.
-        # This return value used to be discarded here (`audio, _ = ...`),
-        # so every no-speech phase still paid the full transcription cost —
-        # measured live at 10-29s for a 15s silent buffer, on top of the
-        # 15s spent recording it. Silero already answered the only question
-        # transcription would have answered.
+        # Skip Whisper when nothing was said. This return value used to be
+        # discarded here (`audio, _ = ...`), so every no-speech phase still
+        # paid the full transcription cost — measured at 10-29s for a 15s
+        # silent buffer, on top of the 15s spent recording it.
+        #
+        # But the VAD does not get the last word, because when it is wrong
+        # this drops the turn outright rather than merely slowing it down —
+        # seen live scoring 0.03 on audio peaking at RMS 3553, i.e. real
+        # sound it refused to call speech. Whisper on a few seconds of
+        # audio costs well under a second, so anything louder than the
+        # calibrated noise floor gets transcribed regardless and Whisper,
+        # which is the better judge, decides whether there were words.
         if not heard_speech:
-            print("(Didn't catch anything.)\n")
-            return last_reply_text
+            peak = getattr(self, "_last_peak_rms", 0.0)
+            if peak <= self.silence_rms_threshold:
+                print("(Didn't catch anything.)\n")
+                return last_reply_text
+            print(f"  (VAD said no speech but peak RMS {peak:.0f} is above the "
+                  f"noise floor {self.silence_rms_threshold:.0f} — transcribing anyway)")
         text = self.transcribe(audio)
         transcription_done_at = time.perf_counter()
 

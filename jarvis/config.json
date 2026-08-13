@@ -20,5 +20,6 @@
   "voice_ollama_max_tokens": 160,
   "ollama_keep_alive": "30m",
   "voice_context_turns": 6,
-  "voice_conversation_window_seconds": 25
+  "voice_conversation_window_seconds": 25,
+  "voice_wake_listen_seconds": 10.0
 }
