@@ -180,8 +180,14 @@ def resume_after_conversation() -> None:
     if not _was_playing_before_conversation:
         return
     _was_playing_before_conversation = False
-    if not _is_running():
-        return
+    # No _is_running() re-check here (unlike pause_for_conversation()) —
+    # the flag being True already proves Spotify was running moments ago,
+    # in this same turn, when we paused it. Seen live: re-checking here
+    # made resume silently no-op under real CPU load (whisper/TTS running
+    # concurrently) — _is_running()'s own 5s AppleScript timeout occasionally
+    # got exceeded, caught internally, and returned False, skipping the
+    # `play` call below entirely and leaving Spotify stuck paused for the
+    # rest of the conversation.
     try:
         run('tell application "Spotify" to play', app_name="Spotify")
     except Exception:
