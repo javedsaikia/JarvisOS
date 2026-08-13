@@ -33,6 +33,7 @@ DEFAULTS = {
     "location_enabled": True,
     "location_default_radius_m": 3000,
     "calling_enabled": True,
+    "spotify_max_volume": 75,
 }
 
 

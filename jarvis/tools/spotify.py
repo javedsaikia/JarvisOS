@@ -11,6 +11,7 @@ import time
 
 from jarvis import spotify_client
 from jarvis.applescript import run
+from jarvis.config import load_config
 
 # Remembers the volume level from before a mute, so unmute() can restore
 # it rather than guessing a fixed value. Module-level since VoiceLoop
@@ -42,6 +43,7 @@ def play() -> str:
         return f"Already playing {line}." if line else "Already playing."
 
     if state == "paused":
+        _apply_volume_cap()
         run('tell application "Spotify" to play', app_name="Spotify")
         line = _now_playing_line()
         return f"Playing {line}." if line else "Playing."
@@ -68,6 +70,7 @@ def play_track(query: str) -> str:
     if not match:
         return f'Couldn\'t find "{query}" on Spotify.'
 
+    _apply_volume_cap()
     subprocess.run(["open", match["uri"]], capture_output=True, timeout=10)
     for _ in range(8):
         time.sleep(1)
@@ -220,6 +223,22 @@ def _get_volume() -> int:
 def _set_volume(level: int) -> None:
     level = max(0, min(100, level))
     run(f'tell application "Spotify" to set sound volume to {level}', app_name="Spotify")
+
+
+_DEFAULT_MAX_AUTO_VOLUME = 75
+
+
+def _apply_volume_cap() -> None:
+    """Caps the volume when JARVIS itself starts or resumes playback — seen
+    live: at volume 100, "Hey Jarvis" stopped registering at all (the mic
+    has no echo/noise cancellation, so loud music at full volume drowns out
+    the wake word before it ever reaches the pipeline). Only applies when
+    JARVIS starts playback; explicit volume_up/volume_down/mute commands
+    are the user's own deliberate choice and stay untouched.
+    """
+    cap = load_config().get("spotify_max_volume", _DEFAULT_MAX_AUTO_VOLUME)
+    if _get_volume() > cap:
+        _set_volume(cap)
 
 
 def mute() -> str:
