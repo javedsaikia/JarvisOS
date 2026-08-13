@@ -133,6 +133,12 @@ SPOTIFY_PAUSE_PATTERNS = [
     # no-op: if something's already playing this stops it; if nothing is,
     # pause is a harmless no-op — either way nothing starts playing.
     r"\b(do not|don't) play (the |any |that |this )?(music|song|spotify|track)\b",
+    # "stop playing", "stop playing on/in Spotify", "stop playing the
+    # music" — the patterns above need a music word directly after "stop",
+    # so the very common "stop PLAYING ..." phrasing matched nothing.
+    # Anchored to the end so it stays about playback and an unrelated
+    # "stop playing games with me" doesn't pause the music.
+    r"\bstop playing\b(\s+(the\s+)?(music|song|track|playback|spotify)|\s+(on|in)\s+spotify)?\s*[.!?]?\s*$",
 ]
 
 # Mute (volume to 0, remembers the level for unmute) is distinct from
