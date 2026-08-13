@@ -512,7 +512,23 @@ class VoiceLoop:
             except sarvam_client.SarvamError as e:
                 print(f"(Sarvam TTS unavailable: {e})")
         print("(listening for yes/no...)")
-        audio, heard_speech = self.record_utterance(max_seconds=CONFIRM_MAX_SECONDS)
+        # Seen live: answering this prompt out loud ("yes") is itself
+        # sustained speech, and with processing_active armed the whole
+        # time cli.process_turn() runs (see _handle_turn_audio), that
+        # answer alone could satisfy the barge-in sustain threshold and
+        # get misread as "stop, cancel the task" — before the task had
+        # even started, since it's still waiting on this exact answer.
+        # Pausing arming for just this listen-and-answer window closes
+        # that gap without touching the real cancel-while-executing path.
+        processing_active = getattr(self, "_processing_active", None)
+        was_armed = processing_active is not None and processing_active.is_set()
+        if was_armed:
+            processing_active.clear()
+        try:
+            audio, heard_speech = self.record_utterance(max_seconds=CONFIRM_MAX_SECONDS)
+        finally:
+            if was_armed:
+                processing_active.set()
         if not heard_speech:
             print("  (heard: nothing above the noise floor — treating as no.)")
             return False
@@ -667,8 +683,12 @@ class VoiceLoop:
         # playback) — explicitly requested: saying "stop" should actually
         # kill an in-flight task (Claude Code can run for minutes), not
         # just silence the eventual reply once it's done. See the
-        # cancel_current() calls in _watch_for_barge_in.
-        processing_active = threading.Event()
+        # cancel_current() calls in _watch_for_barge_in. An instance
+        # attribute, not a local — voice_confirm() (below) needs to reach
+        # it too, to pause arming while it's asking its own yes/no
+        # question (see voice_confirm's own comment for why).
+        self._processing_active = threading.Event()
+        processing_active = self._processing_active
         barge_monitor = None
         # Re-checked every turn, not just at calibration — headphones can
         # get plugged in or removed mid-session. On open speakers, JARVIS's

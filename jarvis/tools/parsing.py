@@ -149,11 +149,22 @@ _SHELL_TRIGGER_BARE_RE = re.compile(
     r"^(?:please\s+)?(?:run|execute)\s+(?:this\s+|the\s+|following\s+|exact\s+)*",
     re.IGNORECASE,
 )
+# Both trigger regexes above are anchored to the start of the string —
+# seen live, dictated speech often has a lead-in before the actual "run
+# ..." request ("here is run this command: sleep 30"), which the anchor
+# never matches, silently falling through to treating the WHOLE phrase —
+# lead-in included — as the literal command. Stripped first so the
+# trigger regexes still see it starting right at "run"/"execute".
+_LEADING_FILLER_RE = re.compile(
+    r"^(?:so\s+|okay\s+|ok\s+|well\s+|here(?:'s|\s+is)\s+|there\s+|"
+    r"i want you to\s+|can you\s+|could you\s+)+",
+    re.IGNORECASE,
+)
 
 
 def extract_shell_command(text: str) -> str:
     """Return the literal command from a dictated/typed 'run ...' request."""
-    stripped = text.strip()
+    stripped = _LEADING_FILLER_RE.sub("", text.strip())
     remainder = _SHELL_TRIGGER_WITH_COMMAND_RE.sub("", stripped)
     if remainder == stripped:
         remainder = _SHELL_TRIGGER_BARE_RE.sub("", stripped)
