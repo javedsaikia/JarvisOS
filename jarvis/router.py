@@ -115,6 +115,12 @@ SPOTIFY_PLAY_PATTERNS = [
 SPOTIFY_PAUSE_PATTERNS = [
     r"\bpause (the )?(music|song|spotify|playback)\b",
     r"\bstop (the )?(music|song|spotify|playback)\b",
+    # Explicit negative instruction ("do not play"/"don't play the song") —
+    # requires a music-related noun so idioms ("don't play games with me",
+    # "don't play it safe") don't misfire. Mapped to pause rather than a
+    # no-op: if something's already playing this stops it; if nothing is,
+    # pause is a harmless no-op — either way nothing starts playing.
+    r"\b(do not|don't) play (the |any |that |this )?(music|song|spotify|track)\b",
 ]
 
 # Mute (volume to 0, remembers the level for unmute) is distinct from
@@ -318,8 +324,15 @@ _TOOL_GROUPS = [
     ("notes", "read", [re.compile(p, re.IGNORECASE) for p in NOTES_READ_PATTERNS]),
     ("email", "read", [re.compile(p, re.IGNORECASE) for p in EMAIL_READ_PATTERNS]),
     ("spotify", "read", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_READ_PATTERNS]),
-    ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
+    # pause checked BEFORE play — seen live: "don't play the music" contains
+    # the substring "play the music", which SPOTIFY_PLAY_PATTERNS matches
+    # regardless of the "don't" in front (patterns aren't negation-aware).
+    # Checking the narrower, negation-including pause group first means a
+    # negated play phrase resolves correctly; no genuine "play X" request
+    # matches any pause pattern, so this reordering doesn't change any
+    # other outcome.
     ("spotify", "pause", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PAUSE_PATTERNS]),
+    ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
     ("spotify", "mute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_MUTE_PATTERNS]),
     ("spotify", "unmute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_UNMUTE_PATTERNS]),
     ("spotify", "volume_down", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_DOWN_PATTERNS]),
