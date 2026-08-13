@@ -171,11 +171,23 @@ def extract_shell_command(text: str) -> str:
     return remainder.strip().rstrip(".").strip()
 
 
-_SONG_LEADING_TRIGGER_RE = re.compile(
-    r"^(?:please\s+)?(?:play|put on|listen to)\s+(?:the\s+(?:song|track)\s+)?",
+# Anchored to the start of the string, this never matched real dictated
+# speech, which leads with something before the verb ("Hey Jarvis, can you
+# play...", "I want you to play..."). The whole sentence was then handed to
+# Spotify search verbatim — live, "can you play a song by Pink Floyd High
+# Hopes on Spotify" returned "The Point Of No Return by Jonathan Young".
+# So: find the play verb ANYWHERE and take what follows. First occurrence
+# rather than last, so a title that contains the word still survives
+# ("play Child's Play by Drake").
+_SONG_TRIGGER_RE = re.compile(r"\b(?:play|put on|listen to)\b\s*", re.IGNORECASE)
+_SONG_TRAILING_SUFFIX_RE = re.compile(r"[,\s]+(?:on|in|from|over)\s+spotify\s*$", re.IGNORECASE)
+# "a song by X", "the track called Y" — drop the framing words so only the
+# name reaches the search. Requires trailing whitespace, so a bare "some
+# music" (a generic request, not a title) is left alone.
+_SONG_FRAMING_RE = re.compile(
+    r"^(?:me\s+)?(?:a|an|the|some)?\s*(?:song|track|tune)\s*(?:by|from|called|named|titled)?\s+",
     re.IGNORECASE,
 )
-_SONG_TRAILING_SUFFIX_RE = re.compile(r"\s+(?:on|in)\s+spotify\s*$", re.IGNORECASE)
 
 
 def extract_song_query(text: str) -> str:
@@ -185,6 +197,12 @@ def extract_song_query(text: str) -> str:
     fields, so leftover filler words ("some", "that") cost nothing.
     """
     stripped = text.strip()
-    remainder = _SONG_LEADING_TRIGGER_RE.sub("", stripped)
+    match = _SONG_TRIGGER_RE.search(stripped)
+    remainder = stripped[match.end():] if match else stripped
+    # Trailing punctuation comes off FIRST: dictated speech ends in "?" or
+    # "." and the "... on spotify$" pattern is anchored, so leaving it on
+    # meant the suffix never matched and "on Spotify" stayed in the query.
+    remainder = remainder.strip().strip("?.!,").strip()
     remainder = _SONG_TRAILING_SUFFIX_RE.sub("", remainder)
-    return remainder.strip().rstrip(".").strip()
+    remainder = _SONG_FRAMING_RE.sub("", remainder)
+    return remainder.strip().strip("?.!,").strip()
