@@ -57,6 +57,22 @@ def play() -> str:
     return "Spotify's open — tell me what song to play."
 
 
+def open_app() -> str:
+    """Launch Spotify without touching playback.
+
+    Explicitly required: naming Spotify must never start music by itself —
+    the user says what to play. Before this existed, "open spotify" matched
+    no pattern at all and fell through to the LLM, which answered from
+    imagination (observed live: it announced "Another Brick in the Wall by
+    Pink Floyd" was playing when nothing was).
+    """
+    subprocess.run(["open", "-a", "Spotify"], capture_output=True, timeout=10)
+    line = _now_playing_line()
+    if line and _player_state() == "paused":
+        return f"Spotify's open — {line} is paused. Tell me what to play."
+    return "Spotify's open — tell me what song to play."
+
+
 def play_track(query: str) -> str:
     """Resolves a name (e.g. "Metallica", "Nothing Else Matters") to a
     real track via the Spotify Web API (jarvis/spotify_client.py — the

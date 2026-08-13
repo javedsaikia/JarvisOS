@@ -109,7 +109,19 @@ SPOTIFY_PLAY_PATTERNS = [
     r"\bplay the (something|music|anything|playback)\b",
     r"\bplay spotify\b",
     r"\bresume (the )?(music|song|playback|spotify)\b",
+    # "start the music" is ordinary phrasing that previously matched
+    # nothing and fell through to the LLM. Safe alongside
+    # SPOTIFY_OPEN_PATTERNS because that group is checked first, so
+    # "start spotify" still means launch-without-playing.
+    r"\bstart (the )?(music|song|playback)\b",
     r"\bunpause\b",
+]
+
+# Just launch the app — never start playback. Checked before the play
+# group so "open spotify" can't be read as a request to resume. Requires
+# the word "spotify" specifically, so "start the music" still plays.
+SPOTIFY_OPEN_PATTERNS = [
+    r"\b(open|launch|start|fire up)\s+(up\s+)?spotify\b",
 ]
 
 SPOTIFY_PAUSE_PATTERNS = [
@@ -331,6 +343,7 @@ _TOOL_GROUPS = [
     # negated play phrase resolves correctly; no genuine "play X" request
     # matches any pause pattern, so this reordering doesn't change any
     # other outcome.
+    ("spotify", "open", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_OPEN_PATTERNS]),
     ("spotify", "pause", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PAUSE_PATTERNS]),
     ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
     ("spotify", "mute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_MUTE_PATTERNS]),

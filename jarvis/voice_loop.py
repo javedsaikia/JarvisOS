@@ -210,9 +210,11 @@ def _split_for_speech(
     return [c[:max_chars] for c in chunks]
 
 
-# Below this length, the fuzzy overlap check is noise rather than signal —
-# see the comment at its use site in _looks_like_self_echo.
-_FUZZY_ECHO_MIN_WORDS = 4
+# Utterances shorter than this are never classified as an echo at all, and
+# below _FUZZY_ECHO_MIN_WORDS the bag-of-words overlap check specifically
+# is noise rather than signal. See the use sites in _looks_like_self_echo.
+_ECHO_MIN_WORDS = 5
+_FUZZY_ECHO_MIN_WORDS = 5
 
 
 def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
@@ -266,7 +268,18 @@ def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     if not new_words or not reply_words:
         return False
     n = len(new_words)
-    # Exact run-of-words match: precise at any length, safe for short input.
+    # Nothing this short is ever treated as an echo. Natural conversation
+    # answers a question using the question's own words — JARVIS asked
+    # "...or exploring some music recommendations?", the user said
+    # "recommendations", and it was discarded as an echo of the very reply
+    # it was answering. Same for "yes", "stop", "30", "command". A one- or
+    # two-word bleed-through does get through as a result, but that is a
+    # far cheaper mistake than ignoring what the user actually said, which
+    # is the complaint that mattered.
+    if n < _ECHO_MIN_WORDS:
+        return False
+    # Exact run-of-words match: precise, so it needs no further length
+    # guard beyond the floor above.
     if any(reply_words[i : i + n] == new_words for i in range(len(reply_words) - n + 1)):
         return True
     # Fuzzy bag-of-words overlap, but only for utterances long enough for
@@ -580,20 +593,37 @@ class VoiceLoop:
         threading.Thread(target=produce, daemon=True).start()
 
         first = True
-        while True:
-            wav_bytes = wav_q.get()
-            if wav_bytes is None:
-                return True
-            if barge_event.is_set():
-                return False
-            if first:
-                # Arm barge-in only once there's real audio, not during the
-                # network call that produces it.
-                playback_active.set()
-                first = False
-                self._last_ttfa = time.perf_counter() - started_at
-            if not cli.tts.play(wav_bytes, stop_event=barge_event):
-                return False
+        try:
+            while True:
+                wav_bytes = wav_q.get()
+                if wav_bytes is None:
+                    return True
+                if barge_event.is_set():
+                    return False
+                if first:
+                    # Arm barge-in only once there's real audio, not during
+                    # the network call that produces it.
+                    playback_active.set()
+                    first = False
+                    self._last_ttfa = time.perf_counter() - started_at
+                if not cli.tts.play(wav_bytes, stop_event=barge_event):
+                    return False
+        finally:
+            # THE source of self-echo, and it was never a text problem.
+            # _watch_for_barge_in appends every frame it sees into
+            # _barge_frames, including all the frames that are JARVIS's own
+            # voice coming back through the mic during playback. That deque
+            # is then used verbatim as the opening ~1s of the NEXT
+            # recording (see record_utterance) — _drain_queue() empties
+            # audio_q but has never touched this. So the tail of JARVIS's
+            # own sentence was being prepended to whatever the user said
+            # next, which is what the transcript-similarity heuristics have
+            # been trying and failing to clean up after ever since.
+            # Dropping it here means the pre-roll only ever holds audio
+            # captured after JARVIS stopped talking, while still doing its
+            # real job of catching a user who starts speaking early.
+            with self._barge_frames_lock:
+                self._barge_frames.clear()
 
     def transcribe(self, audio: np.ndarray) -> str:
         if audio.size == 0:

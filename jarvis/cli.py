@@ -207,6 +207,8 @@ def handle_spotify_control(action: str, user_text: str) -> str:
     function — everything else is purely local. Any error raised here is
     caught by handle_tool's outer try/except, same as every other domain.
     """
+    if action == "open":
+        return spotify.open_app()
     if action == "play":
         return spotify.play()
     if action == "play_track":
