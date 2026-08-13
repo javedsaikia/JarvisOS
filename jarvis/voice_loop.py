@@ -773,6 +773,10 @@ class VoiceLoop:
                 )
                 continue
             except _VoiceLoopShutdown:
+                # Never leave the user's music paused because we exited
+                # mid-conversation; pause/resume is per conversation now,
+                # so shutdown is a conversation ending like any other.
+                spotify.resume_after_conversation()
                 print("Stopping voice loop on request.")
                 return
 
@@ -806,6 +810,15 @@ class VoiceLoop:
             remaining = self.conversation_active_until - time.monotonic()
             listening_banner = f"(Listening for your follow-up — window open {remaining:.0f}s more...)"
         else:
+            # About to go idle on the wake word, so hand the music back
+            # before waiting. Pause/resume is per CONVERSATION, not per
+            # turn: doing it per turn meant every 3s follow-up listen
+            # paused and resumed Spotify, and because the AppleScript state
+            # read lags the write, pause_for_conversation eventually read
+            # "already paused", recorded nothing to restore, and the music
+            # never came back at all — observed live, stuck paused after
+            # the conversation window expired.
+            spotify.resume_after_conversation()
             self.conversation_active_until = None
             self.listen_for_wake_word()
             listening_banner = "(Wake word detected — listening...)"
@@ -813,21 +826,16 @@ class VoiceLoop:
         wake_detected_at = time.perf_counter()
         print(listening_banner)
         if not already_in_conversation:
+            # Quiet the music for the whole conversation before cueing the
+            # user, so neither the chime nor their reply competes with it.
+            spotify.pause_for_conversation()
             # Tell the user we're listening. Only on a fresh wake, not on
             # follow-ups — a chime before every turn of a live conversation
             # is noise, and that matches how Siri/Alexa/Google behave too.
             self._play_ack_tone()
-        # Paused for the whole turn — recording through the spoken reply —
-        # not just the recording, since background music would otherwise
-        # talk over JARVIS's own reply too. resume_after_conversation() in
-        # `finally` guarantees playback resumes no matter which exit path
-        # below fires (nothing heard, self-echo filtered, "stop", a normal
-        # completed reply, or even a shutdown).
-        spotify.pause_for_conversation()
-        try:
-            return self._handle_turn_audio(mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at)
-        finally:
-            spotify.resume_after_conversation()
+        return self._handle_turn_audio(
+            mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at
+        )
 
     def _handle_turn_audio(
         self,
