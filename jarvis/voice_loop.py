@@ -365,6 +365,9 @@ class VoiceLoop:
         self.cfg = cfg
         self.wake_word = cfg["voice_wake_word"]
         self.silence_rms_threshold = cfg["voice_silence_rms_threshold"]
+        # Kept so calibrate() always re-derives from the configured floor
+        # rather than from its own previous (possibly inflated) result.
+        self._base_silence_rms_threshold = cfg["voice_silence_rms_threshold"]
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
         self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
         self.wake_listen_seconds = cfg.get("voice_wake_listen_seconds", WAKE_LISTEN_SECONDS)
@@ -452,7 +455,23 @@ class VoiceLoop:
         levels.sort()
         median = levels[len(levels) // 2] if levels else 0.0
         p90 = levels[int(len(levels) * 0.9)] if levels else 0.0
-        calibrated = max(self.silence_rms_threshold, median * 2.2)
+        # A real room is never digitally silent. All-zero frames mean the
+        # device is delivering nothing — seen live after EarPods were
+        # plugged in and removed, where the process kept a stale PortAudio
+        # device and read zeros forever. Treat it as a dead stream so the
+        # caller re-initializes the audio layer instead of calibrating
+        # against nothing and then sitting there deaf.
+        if p90 <= 0.0:
+            print("  mic is delivering pure silence — treating the audio device as dead")
+            raise _StreamDead()
+        # Baseline from the CONFIGURED value, not the last calibrated one.
+        # This used to be max(self.silence_rms_threshold, ...) where the
+        # left side was the previous calibration, so the threshold could
+        # only ever ratchet upward across stream reopens and never recover
+        # — observed stuck at 5673 (config baseline is 300) after a run of
+        # bad calibrations, high enough to reject ordinary speech long
+        # after the microphone itself was fine again.
+        calibrated = max(self._base_silence_rms_threshold, median * 2.2)
         print(f"  ambient RMS median {median:.0f} / p90 {p90:.0f} -> silence threshold set to {calibrated:.0f}")
         self.silence_rms_threshold = calibrated
         print('  barge-in: say "Hey Jarvis" to interrupt (wake-word gated, not volume)')
@@ -769,8 +788,9 @@ class VoiceLoop:
             except _StreamDead:
                 print(
                     "\n(Audio stream stopped responding — likely a microphone/audio "
-                    "device change. Reopening against the current default input...)\n"
+                    "device change. Reopening against the current default input...)"
                 )
+                self._reinit_audio()
                 continue
             except _VoiceLoopShutdown:
                 # Never leave the user's music paused because we exited
@@ -779,6 +799,33 @@ class VoiceLoop:
                 spotify.resume_after_conversation()
                 print("Stopping voice loop on request.")
                 return
+
+    def _reinit_audio(self) -> None:
+        """Re-enumerate audio devices after a stream failure.
+
+        PortAudio caches its device list at initialization, so simply
+        reopening an InputStream after the user plugs in or unplugs
+        headphones hands back a device index that no longer refers to what
+        it did — or refers to nothing. Seen live: EarPods were connected
+        and removed mid-session, after which the loop reopened onto a stale
+        device that returned pure silence, failed its liveness check,
+        reopened onto the same stale device, and span in that loop
+        indefinitely while appearing to be "online and listening".
+        Terminating and re-initializing forces a fresh enumeration.
+        """
+        try:
+            sd._terminate()
+            sd._initialize()
+        except Exception as e:
+            print(f"  (could not reinitialize the audio layer: {type(e).__name__}: {e})")
+        # Small pause so a device that is genuinely mid-transition (or
+        # permanently gone) can't spin this into a hot retry loop.
+        time.sleep(1.0)
+        try:
+            device = sd.query_devices(sd.default.device[0])
+            print(f"  now listening on: {device['name']}\n")
+        except Exception:
+            print("  (no usable input device found; will keep retrying)\n")
 
     def _conversation_loop(self, mem: MemoryStore) -> None:
         last_reply_text = ""
