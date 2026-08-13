@@ -156,6 +156,25 @@ def _strip_leading_wake_phrase(text: str) -> str:
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# The models still emit markdown despite being asked not to ("Today is
+# **Thursday**"), and it was going to the speech engine verbatim. Strip the
+# markup but keep the words — this only ever touches text on its way to
+# TTS, never the transcript shown or logged.
+_MD_FENCE_RE = re.compile(r"```[\s\S]*?```")
+_MD_INLINE_RE = re.compile(r"[*_`~]{1,3}")
+_MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+_MD_BULLET_RE = re.compile(r"^\s{0,3}[-*+]\s+", re.MULTILINE)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+
+
+def _clean_for_speech(text: str) -> str:
+    text = _MD_FENCE_RE.sub(" ", text)
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _MD_HEADING_RE.sub("", text)
+    text = _MD_BULLET_RE.sub("", text)
+    text = _MD_INLINE_RE.sub("", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
 
 def _split_for_speech(
     text: str, first_min_chars: int = 40, min_chars: int = 140, max_chars: int = 300
@@ -539,7 +558,7 @@ class VoiceLoop:
         overlaps playback of chunk N, so the only thing standing between
         the user and the first word is one short sentence.
         """
-        chunks = _split_for_speech(text)
+        chunks = _split_for_speech(_clean_for_speech(text))
         self._last_ttfa = None
         if not chunks:
             return True
