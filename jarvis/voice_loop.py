@@ -191,6 +191,11 @@ def _split_for_speech(
     return [c[:max_chars] for c in chunks]
 
 
+# Below this length, the fuzzy overlap check is noise rather than signal —
+# see the comment at its use site in _looks_like_self_echo.
+_FUZZY_ECHO_MIN_WORDS = 4
+
+
 def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     """True if new_text is plausibly JARVIS's own just-spoken reply bleeding
     back through the mic, not a new thing the user said.
@@ -242,33 +247,21 @@ def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     if not new_words or not reply_words:
         return False
     n = len(new_words)
-    if n <= 6 and any(reply_words[i : i + n] == new_words for i in range(len(reply_words) - n + 1)):
+    # Exact run-of-words match: precise at any length, safe for short input.
+    if any(reply_words[i : i + n] == new_words for i in range(len(reply_words) - n + 1)):
         return True
+    # Fuzzy bag-of-words overlap, but only for utterances long enough for
+    # 60% overlap to actually mean something. On a 1-3 word utterance it
+    # means almost nothing: a lone "30" or "command" scores 1.0 against any
+    # reply containing that word and was discarded as an echo — measured
+    # live, 36 genuine commands were thrown away this way, which is the
+    # "it just ignores what I say" half of the problem. Short utterances
+    # now rely on the exact check above.
+    if n < _FUZZY_ECHO_MIN_WORDS:
+        return False
     reply_word_set = set(reply_words)
     overlap = sum(1 for w in new_words if w in reply_word_set)
     return overlap / len(new_words) >= 0.6
-
-
-# Anything NOT matching one of these is assumed to be open speakers in the
-# same room as the mic — the case where JARVIS's own TTS output can bleed
-# back into its own recording. On headphones that path doesn't exist, so
-# barge-in can trust the normal calibrated threshold; on speakers it needs
-# extra margin. Checked by device *name*, since there's no cross-platform
-# API that just says "is this headphones" — sounddevice only exposes
-# whatever CoreAudio calls the device.
-_HEADPHONE_NAME_MARKERS = (
-    "headphone", "headset", "earpods", "earbuds", "airpods", "beats",
-    "earphone", "iem", "in-ear",
-)
-
-
-def _headphones_connected() -> bool:
-    try:
-        idx = sd.default.device[1]
-        name = sd.query_devices(idx)["name"].lower()
-    except Exception:
-        return False
-    return any(marker in name for marker in _HEADPHONE_NAME_MARKERS)
 
 
 # voice_confirm gates shell commands and file writes, so a false accept here
@@ -314,8 +307,6 @@ class VoiceLoop:
         # kept turning on and off. A deadline that persists across empty
         # attempts and only expires after real inactivity fixes that.
         self.conversation_active_until: float | None = None
-        self.barge_in_threshold, self.barge_in_sustain_chunks = self._compute_barge_in_params()
-        self.barge_in_grace_seconds = 0.35
         self._barge_frames: deque[np.ndarray] = deque(maxlen=12)
         self._barge_frames_lock = threading.Lock()
         print(f'Loading wake word model ("{self.wake_word}")...')
@@ -370,24 +361,6 @@ class VoiceLoop:
             probs.append(self.vad.speech_probability(chunk))
         return max(probs) if probs else 0.0
 
-    def _compute_barge_in_params(self) -> tuple[float, int]:
-        """Barge-in RMS threshold + required sustained chunks, adjusted for
-        whether output is currently routing through headphones.
-
-        On headphones, JARVIS's own voice can't re-enter the mic, so the
-        normal calibrated-ambient threshold is trustworthy — a loud,
-        sustained sound really is someone interrupting. Through open
-        speakers (a laptop's default), the mic WILL pick up JARVIS's own
-        playback — seen live producing RMS 4000-8000 against a calibrated
-        threshold of only ~2000-3500 — so a higher bar and a longer sustain
-        requirement cuts down how often that gets mistaken for a real
-        interruption. _looks_like_self_echo() in run() is the backstop for
-        whatever still gets through either way.
-        """
-        if _headphones_connected():
-            return max(self.silence_rms_threshold * 2.0, self.silence_rms_threshold + 200), 3
-        return max(self.silence_rms_threshold * 4.0, self.silence_rms_threshold + 800), 6
-
     def calibrate(self, seconds: float = 2.5) -> None:
         """Set the silence threshold from real ambient noise instead of a
         guessed constant — a fixed default can't know your room/mic gain in
@@ -407,20 +380,7 @@ class VoiceLoop:
         calibrated = max(self.silence_rms_threshold, median * 2.2)
         print(f"  ambient RMS median {median:.0f} / p90 {p90:.0f} -> silence threshold set to {calibrated:.0f}")
         self.silence_rms_threshold = calibrated
-        # barge_in_threshold was derived from this at __init__ time, before
-        # calibration — recompute it now, or it stays stuck at whatever the
-        # pre-calibration config default (voice_silence_rms_threshold, 300)
-        # produced (600) regardless of this room's actual noise floor. Seen
-        # live: barge-in firing on ordinary ambient sound because its
-        # threshold never moved off that stale 600 while the real silence
-        # threshold calibrated to 2500+.
-        self.barge_in_threshold, self.barge_in_sustain_chunks = self._compute_barge_in_params()
-        headphones = _headphones_connected()
-        print(
-            f"  barge-in threshold set to {self.barge_in_threshold:.0f} "
-            f"(sustain={self.barge_in_sustain_chunks} chunks, "
-            f"output={'headphones' if headphones else 'speakers — extra margin applied'})"
-        )
+        print('  barge-in: say "Hey Jarvis" to interrupt (wake-word gated, not volume)')
 
     def listen_for_wake_word(self) -> None:
         self.wake_model.reset()
@@ -442,8 +402,25 @@ class VoiceLoop:
         playback_active: threading.Event,
         processing_active: threading.Event | None = None,
     ) -> None:
-        grace_deadline = time.perf_counter() + self.barge_in_grace_seconds
-        sustained = 0
+        """Interrupt on the WAKE WORD, not on loudness.
+
+        This machine has no acoustic echo cancellation, so the mic hears
+        JARVIS's own speakers. An energy threshold cannot tell that apart
+        from the user interrupting, and measured over 416 real turns it
+        fired 179 times (43%) — JARVIS cutting its own replies into
+        fragments, which is what "it says three or four lines and then
+        drops" actually was. Chasing it with a higher threshold and a
+        fuzzy transcript filter also ate 36 genuine user commands.
+
+        openWakeWord makes the problem structurally impossible instead:
+        JARVIS's own speech never contains "Hey Jarvis", so it cannot
+        trigger this, at any volume. Same contract Alexa uses — say the
+        wake word to interrupt.
+        """
+        # Fed every frame, including while disarmed, so the model always
+        # has continuous context and a wake word spanning the moment
+        # playback starts is still caught.
+        self.wake_model.reset()
         while not stop_event.is_set():
             try:
                 frame = self.audio_q.get(timeout=0.2)
@@ -451,43 +428,24 @@ class VoiceLoop:
                 continue
             with self._barge_frames_lock:
                 self._barge_frames.append(frame)
+            score = self.wake_model.predict(frame).get(self.wake_word, 0.0)
             processing = processing_active is not None and processing_active.is_set()
             if not playback_active.is_set() and not processing:
-                # This thread starts before the response is ready (needed
-                # so streaming Ollama playback can be barged in on the
-                # instant it begins). For slow, non-streaming backends —
-                # confirmed live with Sarvam's 10-30s+ reasoning-model
-                # latency — "before playback" can be the entire turn. Any
-                # speech during that dead air used to get misread as
-                # barging in on a reply that hadn't made a sound yet,
-                # silently skipping it before the user ever heard anything.
+                # This thread starts before the response is ready, so that
+                # playback can be interrupted the instant it begins.
                 # processing_active (set only around cli.process_turn) is
-                # the one deliberate exception: real "stop while it's still
-                # working" cancellation, not the reply-skip this comment
-                # originally warned about — see the cancel_current() calls
-                # below.
-                sustained = 0
+                # the deliberate exception: it enables real "stop while
+                # it's still working" cancellation of an in-flight task.
                 continue
-            if time.perf_counter() < grace_deadline:
-                sustained = 0
-                continue
-            rms = self._rms(frame)
-            if rms > self.barge_in_threshold:
-                sustained += 1
-                if sustained >= self.barge_in_sustain_chunks:
-                    if processing and not playback_active.is_set():
-                        print(
-                            f"(Stop detected while working — cancelling that task. "
-                            f"RMS {rms:.0f} vs threshold {self.barge_in_threshold:.0f})"
-                        )
-                        cli.claude_handoff.cancel_current()
-                        cli.shell.cancel_current()
-                    else:
-                        print(f"(Barge-in detected — stopping speech. RMS {rms:.0f} vs threshold {self.barge_in_threshold:.0f})")
-                    stop_event.set()
-                    return
-            else:
-                sustained = 0
+            if score > WAKE_THRESHOLD:
+                if processing and not playback_active.is_set():
+                    print(f"(Wake word heard while working — cancelling that task. score {score:.2f})")
+                    cli.claude_handoff.cancel_current()
+                    cli.shell.cancel_current()
+                else:
+                    print(f"(Wake word heard — stopping speech. score {score:.2f})")
+                stop_event.set()
+                return
 
     def record_utterance(self, max_seconds: float = MAX_UTTERANCE_SECONDS) -> tuple[np.ndarray, bool]:
         # Drain first: the InputStream callback queues frames continuously,
@@ -832,19 +790,11 @@ class VoiceLoop:
         self._processing_active = threading.Event()
         processing_active = self._processing_active
         barge_monitor = None
-        # Re-checked every turn, not just at calibration — headphones can
-        # get plugged in or removed mid-session. On open speakers, JARVIS's
-        # own voice leaking back into the mic (no AEC) can self-trigger a
-        # "barge-in" and cut a reply into fragments — confirmed live. This
-        # was disabled entirely on speakers for a while to stop that, but
-        # that traded away the ability to say "stop" and have it land
-        # immediately (nothing was listening at all during playback) —
-        # explicitly re-enabled at the user's request, accepting the
-        # self-trigger risk as the lesser problem now that the stale-queue
-        # drain and improved self-echo detection (both fixed since the
-        # disable) should make it noticeably less frequent than before.
+        # No headphones/speakers distinction any more: _watch_for_barge_in
+        # triggers on the wake word rather than on loudness, and JARVIS's
+        # own voice can never contain the wake word, so echo through open
+        # speakers is harmless by construction.
         if self.cfg.get("tts_enabled"):
-            self.barge_in_threshold, self.barge_in_sustain_chunks = self._compute_barge_in_params()
             barge_monitor = threading.Thread(
                 target=self._watch_for_barge_in,
                 args=(barge_event, playback_active, processing_active),
