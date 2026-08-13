@@ -26,6 +26,7 @@ from openwakeword.model import Model as WakeWordModel
 from jarvis import cli, sarvam_client
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
+from jarvis.tools import spotify
 from jarvis.vad import SileroVAD, CHUNK_SAMPLES as VAD_CHUNK_SAMPLES
 
 SAMPLE_RATE = 16000
@@ -576,6 +577,26 @@ class VoiceLoop:
         turn_start = time.perf_counter()
         wake_detected_at = time.perf_counter()
         print(listening_banner)
+        # Paused for the whole turn — recording through the spoken reply —
+        # not just the recording, since background music would otherwise
+        # talk over JARVIS's own reply too. resume_after_conversation() in
+        # `finally` guarantees playback resumes no matter which exit path
+        # below fires (nothing heard, self-echo filtered, "stop", a normal
+        # completed reply, or even a shutdown).
+        spotify.pause_for_conversation()
+        try:
+            return self._handle_turn_audio(mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at)
+        finally:
+            spotify.resume_after_conversation()
+
+    def _handle_turn_audio(
+        self,
+        mem: MemoryStore,
+        last_reply_text: str,
+        already_in_conversation: bool,
+        turn_start: float,
+        wake_detected_at: float,
+    ) -> str:
         audio, _ = self.record_utterance()
         utterance_done_at = time.perf_counter()
         text = self.transcribe(audio)

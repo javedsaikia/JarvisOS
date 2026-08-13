@@ -143,6 +143,51 @@ def pause() -> str:
     return "Paused."
 
 
+# Remembers whether the voice loop itself paused Spotify for a
+# conversation turn, so resume_after_conversation() only restarts playback
+# it actually stopped — same "only restore what we changed" pattern as
+# _volume_before_mute above. Silent (no spoken confirmation) since this
+# runs automatically on every turn, not on a user command.
+_was_playing_before_conversation = False
+
+
+def pause_for_conversation() -> None:
+    """Called right before the mic starts recording a turn — so background
+    music doesn't bleed into the recording or talk over JARVIS's reply.
+    Deliberately checks _is_running() first (same reasoning as
+    now_playing_state()): most turns have nothing to do with Spotify at
+    all, and the run() helper's app_name would otherwise auto-launch
+    Spotify just to answer an unrelated question.
+    """
+    global _was_playing_before_conversation
+    _was_playing_before_conversation = False
+    if not _is_running():
+        return
+    try:
+        if _player_state() == "playing":
+            run('tell application "Spotify" to pause', app_name="Spotify")
+            _was_playing_before_conversation = True
+    except Exception:
+        pass  # a Spotify hiccup here should never break the voice loop
+
+
+def resume_after_conversation() -> None:
+    """Called once the turn is fully wrapped up (response spoken, or the
+    turn ended early with nothing to say) — resumes playback only if this
+    module was the one that paused it.
+    """
+    global _was_playing_before_conversation
+    if not _was_playing_before_conversation:
+        return
+    _was_playing_before_conversation = False
+    if not _is_running():
+        return
+    try:
+        run('tell application "Spotify" to play', app_name="Spotify")
+    except Exception:
+        pass
+
+
 def next_track() -> str:
     run('tell application "Spotify" to next track', app_name="Spotify")
     line = _now_playing_line()
