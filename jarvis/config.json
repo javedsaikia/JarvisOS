@@ -1,0 +1,23 @@
+{
+  "user_name": "Javed",
+  "default_backend": "ollama",
+  "ollama_host": "http://localhost:11434",
+  "ollama_model": "qwen2.5-coder:7b",
+  "voice_ollama_model": "qwen2.5:1.5b",
+  "bridge_ollama_model": "qwen2.5:1.5b",
+  "bridge_ollama_max_tokens": 400,
+  "claude_code_enabled": true,
+  "claude_code_command": "claude",
+  "claude_code_confirm": true,
+  "tts_enabled": true,
+  "tts_backend": "piper",
+  "tts_voice_model": "jarvis/voices/en_GB-alan-medium.onnx",
+  "voice_wake_word": "hey_jarvis",
+  "voice_stt_model": "small.en",
+  "voice_silence_seconds": 0.45,
+  "voice_silence_rms_threshold": 300,
+  "voice_ollama_max_tokens": 160,
+  "ollama_keep_alive": "30m",
+  "voice_context_turns": 6,
+  "voice_conversation_window_seconds": 180
+}

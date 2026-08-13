@@ -1,0 +1,11 @@
+.env
+*.env
+jarvis/.venv/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.pyc
+.DS_Store
+jarvis/memory/conversation_log.jsonl
+.claude/settings.local.json
+.claude/*.lock

@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>J.A.R.V.I.S.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+      <div id="app">
+        <!-- Ambient layers (decorative) -->
+        <div class="hud-grid" aria-hidden="true"></div>
+        <div class="hud-vignette" aria-hidden="true"></div>
+        <div class="hud-scanline" aria-hidden="true"></div>
+
+      <canvas id="orb-canvas"></canvas>
+
+      <!-- Concentric reticle around the orb; groups filled by hud-ring.ts -->
+      <svg id="hud-ring" viewBox="0 0 400 400" aria-hidden="true">
+        <circle class="ring-line" cx="200" cy="200" r="150" stroke-width="1"></circle>
+        <circle class="ring-line" cx="200" cy="200" r="112" stroke-width="1"></circle>
+        <g class="ring-ticks spin-cw-slow"></g>
+        <g class="ring-segments spin-ccw"></g>
+        <g class="ring-segments-inner spin-cw"></g>
+        <g class="ring-nodes spin-cw-slow"></g>
+        <g class="ring-brackets spin-ccw-slow"></g>
+        <g class="ring-dashed spin-cw">
+          <circle cx="200" cy="200" r="140" fill="none" stroke="var(--blue)"
+                  stroke-width="1" stroke-dasharray="1 7" opacity="0.55"></circle>
+        </g>
+        <circle id="ring-level-arc" cx="200" cy="200" r="194" fill="none"
+                stroke-width="2.5" stroke-dasharray="0 1219"
+                transform="rotate(-90 200 200)"></circle>
+      </svg>
+
+      <div id="core-label" aria-hidden="true">
+        <span class="core-name">JARVIS</span>
+        <span class="core-sub">CORE ONLINE</span>
+      </div>
+
+      <!-- Decorative edge data columns (motion graphic chrome, not data) -->
+      <div class="data-stream left" aria-hidden="true"><div class="data-stream-inner"></div></div>
+      <div class="data-stream right" aria-hidden="true"><div class="data-stream-inner"></div></div>
+
+      <div class="hud-corner corner-tl" aria-hidden="true"></div>
+      <div class="hud-corner corner-tr" aria-hidden="true"></div>
+      <div class="hud-corner corner-bl" aria-hidden="true"></div>
+      <div class="hud-corner corner-br" aria-hidden="true"></div>
+
+      <header id="hud-header">
+        <div class="eyebrow">Your world. Your voice. One intelligence.</div>
+        <h1 class="wordmark">JARVIS</h1>
+        <div class="subtitle">Your Personal AI Assistant</div>
+      </header>
+
+      <!-- LEFT: live telemetry, all bound to the real audio analyser -->
+      <aside id="left-rail">
+        <section class="hud-card">
+          <div class="card-head">
+            <span>System Status</span>
+            <span id="status-label" class="card-value">Idle</span>
+          </div>
+          <canvas id="viz-wave" class="viz"></canvas>
+          <div class="card-foot">
+            <span id="status-dot" class="idle"></span>
+            <span id="readout-link">—</span>
+          </div>
+        </section>
+
+        <section class="hud-card">
+          <div class="card-head">
+            <span>Output Spectrum</span>
+            <span id="readout-audio" class="card-value">0%</span>
+          </div>
+          <canvas id="viz-spectrum" class="viz"></canvas>
+          <canvas id="viz-history" class="viz viz-short"></canvas>
+        </section>
+
+        <section class="hud-card">
+          <div class="card-head">
+            <span>Vision Feed</span>
+            <span class="card-value">Live Clip</span>
+          </div>
+          <div class="vision-frame">
+            <video
+              class="vision-video"
+              src="/media/jarvis-vision.mp4"
+              autoplay
+              loop
+              muted
+              playsinline
+              preload="auto"
+            ></video>
+          </div>
+        </section>
+
+        <section class="hud-card">
+          <div class="card-head">
+            <span>Audio Out</span>
+          </div>
+          <div class="meter"><div id="readout-bar-fill"></div></div>
+        </section>
+
+        <!-- Hidden by default; spotify-widget.ts reveals it once a
+             spotify_state message reports active playback. -->
+        <section id="spotify-card" class="hud-card" hidden>
+          <div class="card-head">
+            <span>Now Playing</span>
+            <span id="spotify-status" class="card-value">—</span>
+          </div>
+          <div class="spotify-now-playing">
+            <img id="spotify-art" class="spotify-art" alt="" />
+            <div class="spotify-meta">
+              <div id="spotify-track" class="spotify-track">—</div>
+              <div id="spotify-artist" class="spotify-artist">—</div>
+            </div>
+          </div>
+          <div class="spotify-progress-track">
+            <div id="spotify-progress-fill" class="spotify-progress-fill"></div>
+          </div>
+          <div class="spotify-times">
+            <span id="spotify-position">0:00</span>
+            <span id="spotify-duration">0:00</span>
+          </div>
+        </section>
+      </aside>
+
+      <!-- RIGHT: conversation + session telemetry -->
+      <section id="transcript-panel" class="hud-card">
+        <div class="card-head">
+          <span>Comms Log</span>
+          <span id="readout-backend" class="card-value">—</span>
+        </div>
+        <div id="transcript"></div>
+      </section>
+
+      <aside id="right-rail">
+        <div class="stat-chip">
+          <div class="stat-label">Session</div>
+          <div id="readout-session" class="stat-value">00:00</div>
+        </div>
+        <div class="stat-chip">
+          <div class="stat-label">Messages</div>
+          <div id="readout-messages" class="stat-value">0</div>
+        </div>
+      </aside>
+
+      <!-- Routing tiers — lights up to show which backend actually answered -->
+      <nav id="tier-strip" aria-hidden="true">
+        <div class="tier" data-label="[Ollama]">
+          <svg viewBox="0 0 24 24"><path d="M12 3a4 4 0 0 1 4 4v4a4 4 0 0 1-8 0V7a4 4 0 0 1 4-4zM5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          <span>Local LLM</span>
+        </div>
+        <div class="tier" data-label="[Calendar]">
+          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+          <span>Calendar</span>
+        </div>
+        <div class="tier" data-label="[Notes]">
+          <svg viewBox="0 0 24 24"><path d="M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v6h6M9 13h6M9 17h6"/></svg>
+          <span>Notes</span>
+        </div>
+        <div class="tier" data-label="[Files]">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          <span>Files</span>
+        </div>
+        <div class="tier" data-label="[Shell]">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>
+          <span>Shell</span>
+        </div>
+        <div class="tier" data-label="[Claude Code]">
+          <svg viewBox="0 0 24 24"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6M14 4l-4 16"/></svg>
+          <span>Claude Code</span>
+        </div>
+      </nav>
+
+      <div id="force-controls">
+        <button id="force-local-btn" title="Prefix this message with /ollama — forces the local model">Force Local</button>
+        <button id="force-claude-btn" title="Prefix this message with /claude — still requires your confirmation">Ask Claude Code</button>
+      </div>
+
+      <div id="controls">
+        <button id="mute-btn" title="Mute/unmute spoken replies">🔊</button>
+        <button id="stop-btn" title="Stop JARVIS talking, right now">⏹ Stop</button>
+        <button id="voice-btn" title="Start or stop the always-on voice loop">Start Voice</button>
+        <button id="wake-btn" title="Wake the voice loop now">Wake</button>
+        <input id="text-input" type="text" placeholder="Speak or type a command…" autocomplete="off" />
+        <button id="send-btn">Send</button>
+      </div>
+
+      <div id="connection-banner" class="hidden"></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
