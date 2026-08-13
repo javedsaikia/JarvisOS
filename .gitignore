@@ -9,3 +9,4 @@ __pycache__/
 jarvis/memory/conversation_log.jsonl
 .claude/settings.local.json
 .claude/*.lock
+jarvis/browser_profile/

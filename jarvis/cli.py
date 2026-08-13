@@ -4,14 +4,14 @@ via --once for voice-pipeline integration.
 """
 import argparse
 import json
-import sys
+import subprocess
 from typing import Callable
 
-from jarvis import claude_handoff, ollama_client, router, sarvam_client, tts
+from jarvis import claude_handoff, location_client, ollama_client, router, sarvam_client, tts
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.persona import build_system_prompt
-from jarvis.tools import calendar, files, notes, parsing, registry, shell, spotify
+from jarvis.tools import browser, calendar, calling, files, location, notes, parsing, registry, shell, spotify, vision
 
 HELP_TEXT = """Commands:
   /remember <fact>   Save a durable fact/preference to memory
@@ -156,8 +156,11 @@ def handle_email(user_text: str, cfg: dict) -> str:
     if not cfg["claude_code_enabled"]:
         return "Claude Code handoff is disabled in config, so I can't check email right now."
     task = (
-        "Check the user's Gmail inbox using the connected Gmail tool and answer this "
-        f"request in 2-4 short spoken sentences, no markdown, no lists: {user_text}"
+        "Check the user's Gmail inbox using the connected Gmail tool. For each relevant "
+        "email, give exactly one short spoken sentence summarizing it (sender or subject "
+        "plus the gist) — never quote or reproduce an email's full body text, only a "
+        "brief summary line per email. No markdown, no headers, no bullet points, just "
+        f"short spoken sentences one after another. Answer this request: {user_text}"
     )
     try:
         return claude_handoff.invoke(task, cfg["claude_code_command"])
@@ -201,6 +204,14 @@ def handle_spotify_control(action: str, user_text: str) -> str:
         return spotify.play_track(query) if query else spotify.play()
     if action == "pause":
         return spotify.pause()
+    if action == "mute":
+        return spotify.mute()
+    if action == "unmute":
+        return spotify.unmute()
+    if action == "volume_up":
+        return spotify.volume_up()
+    if action == "volume_down":
+        return spotify.volume_down()
     if action == "next":
         return spotify.next_track()
     if action == "previous":
@@ -220,6 +231,8 @@ def execute_file_tool(name: str, arguments: dict, cfg: dict, interactive: bool, 
             return files.read_file(arguments.get("path", ""))
         if name == "list_dir":
             return files.list_dir(arguments.get("path", "."))
+        if name == "search_files":
+            return files.search_files(arguments.get("query", ""))
         if name == "write_file":
             path = arguments.get("path", "")
             content = arguments.get("content", "")
@@ -314,6 +327,210 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
         return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
 
 
+def handle_screen(user_text: str, cfg: dict) -> str:
+    """Read-only — same tier as calendar/notes/email reads, no confirm.
+    Deterministic router match (router.SCREEN_PATTERNS), not LLM-mediated,
+    since there's nothing to extract from the phrasing.
+    """
+    if not cfg.get("vision_enabled", True):
+        return "Screen understanding is disabled in config."
+    try:
+        return vision.describe_screen(user_text, cfg)
+    except vision.VisionError as e:
+        return f"(Screen check failed: {e})"
+
+
+def execute_browser_tool(name: str, arguments: dict, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Mirrors execute_file_tool. get_page_text/get_current_url run
+    immediately (read-only); open_url/click/type_text always confirm
+    first, with a specific prompt naming exactly what will happen — the
+    literal "I will click the button labeled 'Submit'... Proceed?"
+    requirement, not a generic "run this action?".
+    """
+    try:
+        if name == "get_page_text":
+            return browser.get_page_text()
+        if name == "get_current_url":
+            return browser.get_current_url()
+        if name == "open_url":
+            url = arguments.get("url", "")
+            if interactive and not confirm_fn(f"Open this URL in the browser: {url}?"):
+                return "Cancelled by user — nothing opened."
+            return browser.open_url(url)
+        if name == "click":
+            target = arguments.get("target", "")
+            if interactive and not confirm_fn(f'Click "{target}" on the current page?'):
+                return "Cancelled by user — nothing clicked."
+            return browser.click(target)
+        if name == "type_text":
+            target = arguments.get("target", "")
+            text = arguments.get("text", "")
+            if interactive and not confirm_fn(f'Type "{text}" into "{target}" on the current page?'):
+                return "Cancelled by user — nothing typed."
+            return browser.type_text(target, text)
+    except browser.BrowserError as e:
+        return f"Browser error: {e}"
+    return f"Unknown tool: {name}"
+
+
+def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Mirrors handle_files_shell exactly, but against BROWSER_TOOL_SCHEMAS
+    instead of FILE_TOOL_SCHEMAS — a browser-domain turn should only ever
+    see browser tools, not file tools (see registry.py's module docstring
+    for why the two schema lists are kept separate).
+    """
+    if not cfg.get("browser_enabled", True):
+        return "Browser control is disabled in config."
+
+    system_prompt = (
+        build_system_prompt(cfg["user_name"], mem.load_facts())
+        + "\n\n"
+        + registry.build_tool_prompt(registry.BROWSER_TOOL_SCHEMAS)
+    )
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
+
+    try:
+        message = ollama_client.chat_message(
+            messages,
+            cfg["ollama_model"],
+            cfg["ollama_host"],
+            tools=registry.BROWSER_TOOL_SCHEMAS,
+            # Low temperature specifically for this call — verified live,
+            # the default sampling temperature made the model inconsistently
+            # skip emitting the tool-call JSON for even a precise, literal
+            # instruction ("go to example.com"), instead chatting about the
+            # site from background knowledge without navigating. It never
+            # hallucinated a false "done" claim (the safe failure mode), but
+            # it also didn't do what was asked. Tool SELECTION should be as
+            # close to deterministic as this model allows; the final
+            # natural-language phrasing pass below stays at default
+            # temperature since some variation there is fine.
+            options={"temperature": 0.1},
+            keep_alive=cfg.get("ollama_keep_alive"),
+        )
+    except ollama_client.OllamaError as e:
+        return f"(Ollama unavailable: {e})"
+
+    call = None
+    native_calls = message.get("tool_calls")
+    if native_calls:
+        fn = native_calls[0]["function"]
+        args = fn.get("arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {}
+        call = {"name": fn["name"], "arguments": args}
+    else:
+        call = registry.parse_tool_call(message.get("content", ""), registry.tool_names(registry.BROWSER_TOOL_SCHEMAS))
+
+    if not call:
+        return message.get("content", "")
+
+    result = execute_browser_tool(call["name"], call["arguments"], cfg, interactive, confirm_fn)
+
+    followup = messages + [
+        {"role": "assistant", "content": json.dumps(call)},
+        {
+            "role": "user",
+            "content": (
+                f"Tool result for {call['name']}: {result}\n\n"
+                "Now answer the original question in plain natural language, in your "
+                "JARVIS persona. Do not output JSON."
+            ),
+        },
+    ]
+    try:
+        return ollama_client.chat(
+            followup, cfg["ollama_model"], cfg["ollama_host"], keep_alive=cfg.get("ollama_keep_alive")
+        )
+    except ollama_client.OllamaError as e:
+        return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
+
+
+def handle_weather(cfg: dict) -> str:
+    """Read-only informational — same tier as calendar/notes/email reads,
+    no confirm. Deterministic router match, nothing to extract from the
+    phrasing.
+    """
+    if not cfg.get("location_enabled", True):
+        return "Location features are disabled in config."
+    try:
+        return location.describe_weather()
+    except location_client.LocationError as e:
+        return f"(Weather check failed: {e})"
+
+
+def handle_nearby(user_text: str, cfg: dict) -> str:
+    """Read-only informational, no confirm. Category is a plain keyword
+    lookup (location.detect_category) over a small fixed vocabulary, not
+    LLM extraction — see router.py's NEARBY_PATTERNS comment for why.
+    """
+    if not cfg.get("location_enabled", True):
+        return "Location features are disabled in config."
+    category = location.detect_category(user_text)
+    if not category:
+        known = ", ".join(sorted(location_client.CATEGORY_TAGS))
+        return f"I couldn't tell what you're looking for — I can search for: {known}."
+    radius = cfg.get("location_default_radius_m", 3000)
+    try:
+        return location.describe_nearby(category, radius_m=radius)
+    except location_client.LocationError as e:
+        return f"(Nearby search failed: {e})"
+
+
+def handle_open_maps(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Confirmed — a real app opens with a real URL. Mirrors
+    execute_browser_tool's open_url: the confirmation prompt always names
+    the exact thing that will happen, never a generic "run this action?".
+    """
+    if not cfg.get("location_enabled", True):
+        return "Location features are disabled in config."
+
+    query = user_text.strip()
+    lat = lon = None
+    try:
+        loc = location_client.get_location()
+        lat, lon = loc["lat"], loc["lon"]
+    except location_client.LocationError:
+        pass  # Maps still works with just the query text, no coordinates.
+
+    url = location.maps_url(query, lat, lon)
+    if interactive and not confirm_fn(f"Open Apple Maps for \"{query}\"?"):
+        return "Cancelled by user — Maps not opened."
+
+    try:
+        subprocess.run(["open", url], capture_output=True, timeout=10)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return f"(Could not open Maps: {e})"
+    return f'Opened Apple Maps for "{query}".'
+
+
+def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Deterministic dispatch — NOT LLM-mediated, same reasoning and
+    structure as handle_shell above: a real-world action (ringing a real
+    phone) must never depend on a model reliably choosing to call a tool.
+    The number is regex-extracted (calling.parse_phone_number) and
+    confirmation is unconditional whenever interactive, independent of
+    tools_confirm_writes.
+    """
+    if not cfg.get("calling_enabled", True):
+        return "Calling is disabled in config."
+
+    number = calling.parse_phone_number(user_text)
+    if not number:
+        return "I couldn't tell what number to call — try saying the digits clearly, e.g. \"call 555-123-4567\"."
+
+    if interactive and not confirm_fn(f"Call {number}?"):
+        return "Cancelled — call not placed."
+
+    try:
+        return calling.call_number(number)
+    except calling.CallingError as e:
+        return f"(Call failed: {e})"
+
+
 def handle_tool(
     domain: str, action: str, user_text: str, cfg: dict, mem: MemoryStore, interactive: bool, confirm_fn=text_confirm
 ) -> str:
@@ -360,6 +577,23 @@ def handle_tool(
 
         if domain == "files":
             return handle_files_shell(user_text, cfg, mem, interactive, confirm_fn)
+
+        if domain == "screen":
+            return handle_screen(user_text, cfg)
+
+        if domain == "browser":
+            return handle_browser(user_text, cfg, mem, interactive, confirm_fn)
+
+        if domain == "location":
+            if action == "weather":
+                return handle_weather(cfg)
+            if action == "nearby":
+                return handle_nearby(user_text, cfg)
+            if action == "open_maps":
+                return handle_open_maps(user_text, cfg, interactive, confirm_fn)
+
+        if domain == "call":
+            return handle_call(user_text, cfg, interactive, confirm_fn)
     except Exception as e:
         return f"({domain.capitalize()} tool failed: {e})"
 
@@ -447,6 +681,14 @@ def label(backend: str) -> str:
         return "[Files]"
     if backend == "tools:shell":
         return "[Shell]"
+    if backend == "tools:screen":
+        return "[Screen]"
+    if backend == "tools:browser":
+        return "[Browser]"
+    if backend == "tools:location":
+        return "[Location]"
+    if backend == "tools:call":
+        return "[Call]"
     if backend == "sarvam:hi-IN":
         return "[Sarvam Hindi]"
     if backend == "sarvam:as-IN":

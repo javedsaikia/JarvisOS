@@ -223,7 +223,14 @@ async def _handle_message(ws, loop: asyncio.AbstractEventLoop, confirm: WSConfir
         voice_model = cfg.get("tts_voice_model")
         chat_model = cfg.get("bridge_ollama_model", cfg["ollama_model"])
         chat_max_tokens = cfg.get("bridge_ollama_max_tokens")
-    stream_tts = tts_enabled and tts_backend == "piper"
+    # Muted whenever voice_loop is running: it and the web UI share this
+    # Mac's physical speakers/mic, so anything the web UI speaks aloud can
+    # bleed straight into voice_loop's microphone — seen live, a web-UI
+    # shell-command reply got picked up and transcribed as if the user had
+    # said it, and Ollama then hallucinated a fake "I've executed it"
+    # confirmation in response to its own overheard echo. The web UI still
+    # shows the text reply either way; this only suppresses the audio.
+    stream_tts = tts_enabled and tts_backend == "piper" and not _voice_running()
     chat_options = {"num_predict": chat_max_tokens} if chat_max_tokens else None
 
     # Only the plain-Ollama backend ever calls stream_callback (see

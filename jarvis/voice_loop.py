@@ -94,6 +94,33 @@ def _normalize_for_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9\s]+", "", text.lower()).strip()
 
 
+# Exact normalized forms only (not a fuzzy/substring check) — deliberately
+# narrow, so a genuine follow-up that happens to start with the name (e.g.
+# "Jarvis, can you check my email") is never swallowed by this, only a
+# bare repeat of the wake phrase itself. Covers the STT variants actually
+# seen live for "Hey Jarvis" (accent-stripped, fused words, "Jervis").
+_BARE_WAKE_PHRASES = {
+    "hey jarvis", "hey jervis", "hey jrvis", "hey jarviss",
+    "hi jarvis", "hej jarvis", "hej jrvis", "hej jervis",
+    "jarvis", "jervis", "jrvis", "hejervis",
+}
+
+
+def _is_bare_wake_phrase(text: str) -> bool:
+    """True if text is just the wake phrase repeated and nothing else.
+
+    Seen live: saying "Hey Jarvis" again while a conversation window is
+    already open gets transcribed as ordinary follow-up speech (no wake-
+    word model involved — that only runs when NOT already in an active
+    window) and sent straight to the LLM, which answers as if freshly
+    greeted ("Hello! How can I assist you today?") — redundant and a bit
+    jarring when the conversation was already live. Only checked when
+    already in an active window (see _run_one_turn); saying the wake
+    phrase to genuinely start a fresh conversation is unaffected.
+    """
+    return _normalize_for_compare(text) in _BARE_WAKE_PHRASES
+
+
 def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     """True if new_text is plausibly JARVIS's own just-spoken reply bleeding
     back through the mic, not a new thing the user said.
@@ -113,24 +140,39 @@ def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     live, "As an AI language model" bled through and transcribed as "As in
     the air language," sharing no exact run of 2+ words with the original
     despite obviously being the same echo. Falls back to a majority-of-
-    words-appear-anywhere check for short utterances, which catches that
-    case; the trade-off is a real but rare new command that happens to
-    reuse most of the same words as the last reply could get misread as an
-    echo. Given the alternative is full conversations derailing into
-    self-talk, that trade-off is worth it. The actual fix would be real
-    acoustic echo cancellation (feeding the outgoing TTS audio back as a
-    reference signal to subtract from the mic input) — a real DSP project,
-    not a text heuristic; this stays a mitigation until that exists.
+    words-appear-anywhere check; the trade-off is a real but rare new
+    command that happens to reuse most of the same words as the last reply
+    could get misread as an echo. Given the alternative is full
+    conversations derailing into self-talk, that trade-off is worth it.
+
+    No longer capped to short utterances — that cap was the bigger bug.
+    Seen live: JARVIS's own longer replies (especially tool results like a
+    multi-sentence email summary) bleed through just as often as short
+    ones, and a MISSED long echo does far more damage than a missed short
+    one. It gets processed as a genuine new request (sometimes
+    re-triggering the same tool call, producing the same reply again,
+    which then bleeds through again), and it pollutes the LLM's recent
+    context with a confused meta-exchange the model then keeps circling
+    back to for several further turns regardless of what's actually said
+    next — one missed email-summary echo derailed five or six subsequent
+    turns into an email/hallucination loop even after the topic moved on.
+    Longer text also makes the fuzzy check safer, not riskier: a
+    coincidental 60%+ word overlap between a genuine new command and an
+    unrelated prior reply gets less likely as length grows, not more.
+    The actual fix would be real acoustic echo cancellation (feeding the
+    outgoing TTS audio back as a reference signal to subtract from the mic
+    input) — a real DSP project, not a text heuristic; this stays a
+    mitigation until that exists.
     """
     # Word-level containment, not character-level: a plain substring check
     # matches "yo" inside "...assist YOu today" — same class of mistake as
     # the voice_confirm substring bug (see CONFIRM_YES_RE above).
     new_words = _normalize_for_compare(new_text).split()
     reply_words = _normalize_for_compare(last_reply).split()
-    if not new_words or not reply_words or len(new_words) > 6:
+    if not new_words or not reply_words:
         return False
     n = len(new_words)
-    if any(reply_words[i : i + n] == new_words for i in range(len(reply_words) - n + 1)):
+    if n <= 6 and any(reply_words[i : i + n] == new_words for i in range(len(reply_words) - n + 1)):
         return True
     reply_word_set = set(reply_words)
     overlap = sum(1 for w in new_words if w in reply_word_set)
@@ -358,6 +400,19 @@ class VoiceLoop:
                 sustained = 0
 
     def record_utterance(self, max_seconds: float = MAX_UTTERANCE_SECONDS) -> tuple[np.ndarray, bool]:
+        # Drain first: the InputStream callback queues frames continuously,
+        # including the entire time JARVIS was mid-reply (LLM latency +
+        # TTS playback, seen live running 20-40+ seconds). Nothing here
+        # used to discard that backlog before listening again, so a fresh
+        # "recording" could start by consuming hundreds of queued frames
+        # of JARVIS's OWN just-finished speech before ever reaching
+        # genuinely current audio — the actual mechanism behind most of
+        # what looked like random mis-hearing, confirm prompts hearing an
+        # unrelated older reply instead of yes/no, and the self-echo text
+        # filter (which only runs after this) having stale content to
+        # filter in the first place. This is a bug fix, not a tuning
+        # knob — a listening phase should always start from silence.
+        self._drain_queue()
         # heard_speech is now decided by Silero VAD, not the RMS threshold —
         # a real speech classifier doesn't need per-room amplitude
         # calibration the way raw RMS does, which is exactly what kept
@@ -421,12 +476,21 @@ class VoiceLoop:
         segments, _ = self.whisper.transcribe(audio_float, language="en", beam_size=1)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
-    def speak(self, text: str, stop_event: threading.Event | None = None) -> bool:
-        return cli.speak_response(text, self.cfg, stop_event=stop_event)
-
     def voice_confirm(self, prompt: str) -> bool:
         print(f"[Router] {prompt}")
-        self.speak(prompt + " Say yes or no.")
+        # Was self.speak() (cli.speak_response -> Piper), left over from
+        # before the Bulbul-everywhere switch — every other reply plays
+        # through Sarvam now, so the confirm prompt suddenly speaking in a
+        # different voice (Piper's British accent) was jarring and
+        # confusing on its own, on top of everything else. No Piper
+        # fallback on failure, same as every other Sarvam call site since
+        # that switch — just report and move on.
+        if self.cfg.get("tts_enabled"):
+            try:
+                wav_bytes = sarvam_client.text_to_speech(prompt + " Say yes or no.", language_code="en-IN")
+                cli.tts.play(wav_bytes)
+            except sarvam_client.SarvamError as e:
+                print(f"(Sarvam TTS unavailable: {e})")
         print("(listening for yes/no...)")
         audio, heard_speech = self.record_utterance(max_seconds=CONFIRM_MAX_SECONDS)
         if not heard_speech:
@@ -499,7 +563,10 @@ class VoiceLoop:
                 last_reply_text = ""
 
     def _run_one_turn(self, mem: MemoryStore, last_reply_text: str) -> str:
-        if self.conversation_active_until is not None and time.monotonic() < self.conversation_active_until:
+        already_in_conversation = (
+            self.conversation_active_until is not None and time.monotonic() < self.conversation_active_until
+        )
+        if already_in_conversation:
             remaining = self.conversation_active_until - time.monotonic()
             listening_banner = f"(Listening for your follow-up — window open {remaining:.0f}s more...)"
         else:
@@ -528,6 +595,10 @@ class VoiceLoop:
 
         print(f"You said: {text}")
 
+        if already_in_conversation and _is_bare_wake_phrase(text):
+            print("(Already listening — no need to say the wake word again, go ahead.)\n")
+            return last_reply_text
+
         if last_reply_text and _looks_like_self_echo(text, last_reply_text):
             print("(Ignoring — sounds like my own voice bleeding into the mic, not a new command.)\n")
             return last_reply_text
@@ -552,10 +623,18 @@ class VoiceLoop:
         # barged in on the instant it begins).
         playback_active = threading.Event()
         barge_monitor = None
+        # Re-checked every turn, not just at calibration — headphones can
+        # get plugged in or removed mid-session. On open speakers, JARVIS's
+        # own voice leaking back into the mic (no AEC) can self-trigger a
+        # "barge-in" and cut a reply into fragments — confirmed live. This
+        # was disabled entirely on speakers for a while to stop that, but
+        # that traded away the ability to say "stop" and have it land
+        # immediately (nothing was listening at all during playback) —
+        # explicitly re-enabled at the user's request, accepting the
+        # self-trigger risk as the lesser problem now that the stale-queue
+        # drain and improved self-echo detection (both fixed since the
+        # disable) should make it noticeably less frequent than before.
         if self.cfg.get("tts_enabled"):
-            # Re-checked every turn, not just at calibration — headphones
-            # can get plugged in or removed mid-session, and the
-            # threshold/sustain requirement should track that immediately.
             self.barge_in_threshold, self.barge_in_sustain_chunks = self._compute_barge_in_params()
             barge_monitor = threading.Thread(
                 target=self._watch_for_barge_in,

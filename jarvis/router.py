@@ -117,6 +117,38 @@ SPOTIFY_PAUSE_PATTERNS = [
     r"\bstop (the )?(music|song|spotify|playback)\b",
 ]
 
+# Mute (volume to 0, remembers the level for unmute) is distinct from
+# pause above — the point is to let the mic hear a spoken command clearly
+# without music underneath, not to stop playback. `.*` gaps (matching the
+# same loose style as SPOTIFY_PLAY_TRACK_PATTERNS below) instead of a
+# fixed word sequence, since natural phrasing varies a lot here — e.g.
+# "the volume of Spotify should get muted" has words between "volume" and
+# "muted" that a tight sequence wouldn't allow for.
+SPOTIFY_MUTE_PATTERNS = [
+    r"\bmute (the )?(spotify|music|song|volume)\b",
+    r"\b(spotify|volume|music)\b.*\bmuted\b",
+]
+
+SPOTIFY_UNMUTE_PATTERNS = [
+    r"\bunmute (the )?(spotify|music|song|volume)\b",
+    r"\b(spotify|volume|music)\b.*\bunmuted\b",
+]
+
+SPOTIFY_VOLUME_DOWN_PATTERNS = [
+    r"\bdecrease (the )?volume\b",
+    r"\bturn down (the )?(volume|music|spotify|song)\b",
+    r"\bvolume down\b",
+    r"\blower (the )?volume\b",
+    r"\b(spotify|music)\b.*\b(volume|it)\b.*\bdecreased\b",
+]
+
+SPOTIFY_VOLUME_UP_PATTERNS = [
+    r"\bincrease (the )?volume\b",
+    r"\bturn up (the )?(volume|music|spotify|song)\b",
+    r"\bvolume up\b",
+    r"\bmake it louder\b",
+]
+
 SPOTIFY_NEXT_PATTERNS = [
     r"\bnext (song|track)\b",
     r"\bskip (this |the )?(song|track)\b",
@@ -142,12 +174,87 @@ SPOTIFY_PLAY_TRACK_PATTERNS = [
     r"\bput on\b.+\bspotify\b",
 ]
 
+# Deterministic, not LLM-mediated — read-only informational, same tier as
+# calendar/notes/email reads.
+WEATHER_PATTERNS = [
+    r"\bwhat('s| is) the weather\b",
+    r"\bhow('s| is) the weather\b",
+    r"\bweather (today|now|outside|like)\b",
+    r"\bis it (going to |gonna )?rain(ing)?\b",
+    r"\btemperature outside\b",
+]
+
+# Category (restaurant/hotel/gas station/...) is extracted by
+# jarvis.tools.location.detect_category — a plain keyword lookup over a
+# small fixed vocabulary, not LLM extraction. Deliberately requires both
+# a place-type word AND a proximity word ("nearby"/"near me"/...) so a
+# plain "restaurant" mention in unrelated conversation doesn't misfire.
+NEARBY_PATTERNS = [
+    r"\b(nearby|near me|around here|close by)\b.*\b(restaurant|hotel|gas station|petrol|fuel|cafe|coffee|pharmacy|food)s?\b",
+    r"\b(restaurant|hotel|gas station|petrol|fuel|cafe|coffee|pharmacy|food)s?\b.*\b(nearby|near me|around here|close by)\b",
+    r"\bfind (a |the )?(nearby |closest |nearest )?(restaurant|hotel|gas station|cafe|pharmacy)\b",
+    r"\bwhere('s| is) the (nearest|closest) (restaurant|hotel|gas station|cafe|pharmacy)\b",
+]
+
+# Confirmed — opens a real app with a real URL. See MAPS_PATTERNS' domain
+# entry in _TOOL_GROUPS: ("location", "open_maps"), gated in
+# cli.handle_open_maps.
+MAPS_PATTERNS = [
+    r"\bopen (that |this |it )?(in|on) (apple )?maps\b",
+    r"\bshow (that |this |it )?on (the |a )?map\b",
+    r"\bopen maps\b",
+]
+
+# Confirmed, deterministic — NOT LLM-mediated, same reasoning as
+# SHELL_PATTERNS above: calling a real phone number is a real-world
+# action, so whether it happens can't depend on a model reliably emitting
+# a tool-call. jarvis.tools.calling.parse_phone_number does the actual
+# number extraction; this just detects the calling intent.
+CALL_PATTERNS = [
+    r"\bcall (this |that )?number\b",
+    r"\bcall\b.*\d{3}",
+    r"\bdial\b.*\d{3}",
+    r"\bdial (this |that )?number\b",
+]
+
 # Deliberately narrow — "write a script to rename files" must still escalate
 # to Claude Code (matches CLAUDE_CODE_PATTERNS' "write a script"), not get
 # swallowed here. These only match direct, simple file operations that still
 # need LLM extraction (a path/content isn't literally present in the text
 # the way a shell command is) — see SHELL_PATTERNS below for the
 # deterministic, non-LLM-mediated shell path.
+# Deterministic, not LLM-mediated — there's nothing to extract from the
+# phrasing (unlike browser targets/URLs below), so this is the same
+# "cheap and direct" treatment as calendar/notes/email reads.
+SCREEN_PATTERNS = [
+    r"\bwhat('s| is) on (my |the )?screen\b",
+    r"\bwhat('s| is) on (this|the) page\b",
+    r"\bdescribe what i('m| am) (looking at|seeing)\b",
+    r"\bwhat do you see\b",
+    r"\btake a screenshot\b",
+]
+
+# Browser actions are LLM-mediated (like FILES_PATTERNS below) — click
+# targets, typed text, and URLs are too free-form for deterministic
+# extraction. Every action these route to that changes state
+# (open_url/click/type_text) is confirmed in cli.execute_browser_tool
+# before it runs; only get_page_text/get_current_url are automatic.
+BROWSER_PATTERNS = [
+    r"\bclick (the |on )?.+\b(button|link)\b",
+    r"\bfill (in |out )?(the )?form\b",
+    r"\bnavigate to\b",
+    r"\bopen (this |the )?(url|website|webpage|link)\b",
+    r"\btype\b.+\b(into|in) the\b",
+    r"\bgo to\b.+\b(and|then)\b",
+    # Bare "go to <url>" (no compound "and do X" clause) — seen live:
+    # without this, "go to example.com" fell through to plain Ollama,
+    # which HALLUCINATED a fake "you're now on the page" confirmation
+    # without ever actually navigating. Requires something URL-shaped
+    # after "go to" (a dot-TLD or a scheme) so plain "go to sleep"/"go to
+    # the store" don't misfire.
+    r"\bgo to\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
+]
+
 FILES_PATTERNS = [
     r"\bread (the |a )?file\b",
     r"\bopen (the |a )?file\b",
@@ -158,6 +265,9 @@ FILES_PATTERNS = [
     r"\bcreate (a |an )?file\b",
     r"\bsave\b.*\b(to|into|as) (a |the )?file\b",
     r"\bproject (files|directory|folder)\b",
+    r"\bsearch (for |my )?(a |the )?files?\b",
+    r"\bfind (a |the |my )?files?\b",
+    r"\bsearch (my |the )?(desktop|documents|downloads)\b",
 ]
 
 # Shell commands get their own domain, deliberately NOT LLM-mediated: "run
@@ -202,12 +312,24 @@ _TOOL_GROUPS = [
     ("spotify", "read", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_READ_PATTERNS]),
     ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
     ("spotify", "pause", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PAUSE_PATTERNS]),
+    ("spotify", "mute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_MUTE_PATTERNS]),
+    ("spotify", "unmute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_UNMUTE_PATTERNS]),
+    ("spotify", "volume_down", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_DOWN_PATTERNS]),
+    ("spotify", "volume_up", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_UP_PATTERNS]),
     ("spotify", "next", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_NEXT_PATTERNS]),
     ("spotify", "previous", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PREVIOUS_PATTERNS]),
     ("spotify", "play_track", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_TRACK_PATTERNS]),
+    ("location", "weather", [re.compile(p, re.IGNORECASE) for p in WEATHER_PATTERNS]),
+    ("location", "nearby", [re.compile(p, re.IGNORECASE) for p in NEARBY_PATTERNS]),
+    ("location", "open_maps", [re.compile(p, re.IGNORECASE) for p in MAPS_PATTERNS]),
+    ("call", "auto", [re.compile(p, re.IGNORECASE) for p in CALL_PATTERNS]),
     # Checked before "files" — a request naming a literal command (e.g. "run
     # ls -la") must never fall through to the LLM-mediated files path.
     ("shell", "auto", [re.compile(p, re.IGNORECASE) for p in SHELL_PATTERNS]),
+    ("screen", "read", [re.compile(p, re.IGNORECASE) for p in SCREEN_PATTERNS]),
+    # Checked before "files" — e.g. "open this website" must not fall
+    # through to the files domain's "open (the|a) file" pattern.
+    ("browser", "auto", [re.compile(p, re.IGNORECASE) for p in BROWSER_PATTERNS]),
     ("files", "auto", [re.compile(p, re.IGNORECASE) for p in FILES_PATTERNS]),
 ]
 

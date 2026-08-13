@@ -27,6 +27,12 @@ DEFAULTS = {
     "voice_silence_seconds": 0.45,
     "voice_silence_rms_threshold": 300,
     "voice_conversation_window_seconds": 180,
+    "vision_enabled": True,
+    "vision_ollama_model": "moondream",
+    "browser_enabled": True,
+    "location_enabled": True,
+    "location_default_radius_m": 3000,
+    "calling_enabled": True,
 }
 
 

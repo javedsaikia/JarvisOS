@@ -12,14 +12,11 @@ import time
 from jarvis import spotify_client
 from jarvis.applescript import run
 
-# Spotify's official "Today's Top Hits" playlist — fallback starting point
-# for a bare "play something" when nothing is loaded yet (e.g. right after
-# install/login, player state is "stopped" and there's no current track to
-# resume). Verified live: AppleScript's own `open location` inside `tell
-# application "Spotify"` silently no-ops on this Mac; the macOS `open`
-# command (LaunchServices) is what actually hands the spotify: URI off to
-# the app and gets it playing.
-_DEFAULT_PLAYLIST_URI = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"
+# Remembers the volume level from before a mute, so unmute() can restore
+# it rather than guessing a fixed value. Module-level since VoiceLoop
+# creates no persistent Spotify object of its own — matches the rest of
+# this module's stateless-function style otherwise.
+_volume_before_mute: int | None = None
 
 
 def _player_state() -> str:
@@ -46,17 +43,16 @@ def play() -> str:
 
     if state == "paused":
         run('tell application "Spotify" to play', app_name="Spotify")
-    else:
-        # "stopped" with no current track — nothing for a bare `play` to
-        # resume, so seed a default playlist instead.
-        subprocess.run(["open", _DEFAULT_PLAYLIST_URI], capture_output=True, timeout=10)
-        for _ in range(8):
-            time.sleep(1)
-            if _player_state() == "playing":
-                break
+        line = _now_playing_line()
+        return f"Playing {line}." if line else "Playing."
 
-    line = _now_playing_line()
-    return f"Playing {line}." if line else "Playing."
+    # "stopped" with no current track — nothing for a bare `play` to
+    # resume. This used to seed a default playlist here, but that's
+    # guessing at content the user never asked for. Explicitly requested:
+    # a generic Spotify command should just open the app and wait for an
+    # actual song name (play_track), not start playing something random.
+    subprocess.run(["open", "-a", "Spotify"], capture_output=True, timeout=10)
+    return "Spotify's open — tell me what song to play."
 
 
 def play_track(query: str) -> str:
@@ -157,3 +153,50 @@ def previous_track() -> str:
     run('tell application "Spotify" to previous track', app_name="Spotify")
     line = _now_playing_line()
     return f"Back to {line}." if line else "Back to the previous track."
+
+
+_VOLUME_STEP = 20
+
+
+def _get_volume() -> int:
+    result = run('tell application "Spotify" to sound volume', app_name="Spotify")
+    try:
+        return int(float(result))
+    except ValueError:
+        return 100
+
+
+def _set_volume(level: int) -> None:
+    level = max(0, min(100, level))
+    run(f'tell application "Spotify" to set sound volume to {level}', app_name="Spotify")
+
+
+def mute() -> str:
+    """Lowers Spotify to silent so the mic can hear a spoken command
+    clearly without music underneath it — distinct from pause(), which
+    stops playback outright. Remembers the pre-mute level so unmute()
+    restores it rather than guessing a fixed volume back."""
+    global _volume_before_mute
+    current = _get_volume()
+    if current > 0:
+        _volume_before_mute = current
+    _set_volume(0)
+    return "Muted Spotify."
+
+
+def unmute() -> str:
+    restore = _volume_before_mute if _volume_before_mute else 70
+    _set_volume(restore)
+    return "Unmuted Spotify."
+
+
+def volume_up() -> str:
+    new_level = _get_volume() + _VOLUME_STEP
+    _set_volume(new_level)
+    return f"Volume up to {min(100, new_level)} percent."
+
+
+def volume_down() -> str:
+    new_level = _get_volume() - _VOLUME_STEP
+    _set_volume(new_level)
+    return f"Volume down to {max(0, new_level)} percent."

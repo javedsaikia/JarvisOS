@@ -97,6 +97,12 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `voice_ollama_max_tokens` — cap for voice replies; lower values reduce response latency
 - `voice_silence_seconds` — how long the voice loop waits after you stop speaking before it hands off to STT
 - `voice_silence_rms_threshold` — mic energy level below which the voice loop considers you done talking; raise it in a noisy room, lower it if it cuts you off early
+- `vision_enabled` — set `false` to fully disable screen understanding (default `true`)
+- `vision_ollama_model` — local Ollama vision model for `describe_screen()` (default `"moondream"`, `ollama pull moondream` first)
+- `browser_enabled` — set `false` to fully disable browser control (default `true`)
+- `location_enabled` — set `false` to fully disable weather/nearby-places/Maps (default `true`)
+- `location_default_radius_m` — search radius for nearby-places lookups, in meters (default `3000`)
+- `calling_enabled` — set `false` to fully disable the calling feature (default `true`)
 
 ## Personality
 
@@ -221,6 +227,144 @@ Both this and the file tool-calling path were tried as one combined
 LLM-mediated domain first; that's what "Ollama sometimes doesn't call the
 tool it's told to" above is describing, and why shell was split out into
 its own deterministic path once that was caught live.
+
+## Screen understanding & browser control
+
+Two more tool domains, same "cheapest-capable-first, confirm before
+anything changes state" architecture as everything else above. Both can
+be fully disabled via config (`vision_enabled` / `browser_enabled`).
+
+**One-time setup** (not needed for anything else in this project):
+```bash
+ollama pull moondream                          # local vision model, ~1.6GB
+jarvis/.venv/bin/pip install playwright
+jarvis/.venv/bin/playwright install chromium   # ~150-300MB
+```
+Screenshots require macOS's "Screen Recording" permission — grant it once
+to whatever app hosts this process (Terminal, etc.) in
+System Settings > Privacy & Security > Screen Recording, then restart the
+voice loop/bridge. `jarvis/tools/vision.py` raises a clear error naming
+this exact fix if the permission is missing rather than failing silently.
+
+### Screen understanding (read-only, never confirmed)
+
+"What's on my screen?", "describe what I'm looking at", "what's on this
+page?", "what do you see?", "take a screenshot" → `[Screen]`. Deterministic
+router match (`router.SCREEN_PATTERNS`), not LLM-mediated — there's nothing
+to extract from the phrasing. `jarvis/tools/vision.py` shells out to
+macOS's built-in `screencapture -x` (silent, no camera-shutter sound), then
+sends the image to a **local** Ollama vision model (`moondream` by
+default) — no cloud call, no API key. Same tier as calendar/notes/email
+reads: automatic, no confirmation.
+
+Quality note: `moondream` is small and free; its descriptions are more
+generic than a larger cloud vision model would give. That trade-off was
+chosen deliberately (private, zero ongoing cost, matches this project's
+local-first design) — there's no cloud fallback in this version.
+
+### Browser control (Playwright, confirmed before anything happens)
+
+"Click the login button", "fill out the form", "go to example.com",
+"navigate to ...", "type my email into the field" → `[Browser]`.
+LLM-mediated (same pattern as the file tools above) — click targets,
+typed text, and URLs are too free-form for regex extraction. Ollama picks
+one of five tools from `jarvis/tools/browser.py`, run against **one
+persistent, JARVIS-controlled Chromium instance** (`jarvis/browser_profile/`,
+gitignored — never your actual daily browser), launched lazily on first
+use so logins/cookies persist across turns instead of a fresh incognito
+window spawning every command.
+
+| Tool | Confirmed? | Notes |
+|---|---|---|
+| `open_url` | **Yes** | `"Open this URL in the browser: {url}?"` |
+| `click` | **Yes** | `"Click \"{target}\" on the current page?"` |
+| `type_text` | **Yes** | `"Type \"{text}\" into \"{target}\" on the current page?"` |
+| `get_page_text` | No | Read-only |
+| `get_current_url` | No | Read-only |
+
+The confirmation prompt always names the exact URL/target/text about to
+be acted on — never a generic "run this action?" — so you see precisely
+what's about to happen before it does. This goes through the same
+`confirm_fn` mechanism as everything else in this project: a real spoken
+yes/no over voice, a `y/N` prompt in the terminal, or a Yes/No button in
+the web UI.
+
+`click`/`type_text` resolve the plain-language `target` via Playwright
+locators (accessible role/name, label, placeholder, text — in that
+order), matching exactly one element; zero or multiple matches raise a
+clear error rather than guessing which one was meant.
+
+Safety/accuracy notes:
+- Verified live: a bare "go to example.com" (no confirmation, no action)
+  used to fall through to plain Ollama chat and get a **hallucinated**
+  "you're now on the page" reply with nothing actually navigated —
+  `router.BROWSER_PATTERNS` was missing a bare "go to \<url\>" case at
+  first. Fixed; this is exactly the failure mode confirmation exists to
+  prevent, so if a browser phrase ever answers instead of acting, treat
+  it as a router gap to fix, not a quirk to route around.
+- The tool-selection call in `handle_browser()` runs at low temperature
+  (`0.1`) — verified live, default sampling occasionally skipped emitting
+  the tool-call JSON for even an unambiguous instruction, answering
+  conversationally from background knowledge instead of acting. It never
+  fabricated a false "done" confirmation this way (the unsafe failure
+  mode), but it also didn't do what was asked; the lower temperature
+  made tool-call emission consistent across repeated identical requests.
+
+## Location-aware local search & Calling
+
+Two more tool domains, same "cheapest-capable-first, confirm before
+anything changes state" architecture as everything else in this project.
+Both fully disableable via config (`location_enabled` / `calling_enabled`).
+**No new dependencies** — `jarvis/location_client.py` is stdlib `urllib`
+only, same pattern as `spotify_client.py`/`sarvam_client.py`, and calling
+is a single `open tel:...` subprocess call.
+
+Unlike the browser tools above, **none of this is LLM-mediated** — place
+category (restaurant/hotel/gas station/cafe/pharmacy) is a plain keyword
+lookup over a small fixed vocabulary
+(`jarvis/tools/location.py:detect_category`), and a phone number is
+regex-extracted (`jarvis/tools/calling.py:parse_phone_number`), the same
+non-LLM-mediated treatment `router.py` already gives shell commands and
+for the same reason: a real-world action (ringing a phone, opening a
+real app) can't depend on a model reliably choosing to call a tool.
+
+### Weather & nearby places (read-only, never confirmed)
+
+"What's the weather?", "is it going to rain?", "find nearby restaurants",
+"where's the nearest gas station?" → `[Location]`. Same tier as
+calendar/notes/email reads: automatic, no confirmation.
+
+- **Location**: prefers `CoreLocationCLI` (real GPS) if it's already
+  installed (`shutil.which` — this project never installs it for you);
+  otherwise falls back to free IP-based geolocation (`ipwho.is`, HTTPS,
+  no key). For meaningfully better accuracy: `brew install corelocationcli`.
+- **Weather**: [Open-Meteo](https://open-meteo.com/) — free, no API key.
+- **Nearby places**: OpenStreetMap's Overpass API — free, no API key.
+  Tries three known public mirrors in sequence (the main instance
+  returned a real 504 under load during development — a known
+  characteristic of the free community-run service, not a bug here).
+- Categories supported out of the box: restaurants, hotels, gas stations,
+  cafes, pharmacies. Add more by adding one line each to
+  `location_client.CATEGORY_TAGS` (an OSM tag) and
+  `location.py`'s `_CATEGORY_KEYWORDS` (the trigger words).
+
+### Open in Apple Maps (confirmed)
+
+"Open this in Maps", "show that on the map" → `[Location]`, but always
+asks first: `Open Apple Maps for "<query>"?` — names the exact search
+query before anything opens.
+
+### Calling (confirmed, always)
+
+"Call 555-123-4567", "dial this number" → `[Call]`. Always asks first:
+`Call <number>?` — showing the exact parsed number — before ever touching
+`tel:`. On confirmation, `open tel:<number>` hands the call to Continuity/
+Handoff (a paired iPhone), the same way clicking a `tel:` link in Safari
+would. **This phase deliberately does not**: dial automatically without
+confirmation, resolve a contact name to a number, or use any paid
+telephony API — "call this number" with no digits anywhere in the
+utterance gets a clear "I couldn't tell what number to call" rather than
+guessing.
 
 ## Voice output (Piper)
 
