@@ -63,6 +63,17 @@ VAD_SPEECH_THRESHOLD = 0.5
 
 MAX_UTTERANCE_SECONDS = 15
 CONFIRM_MAX_SECONDS = 6
+# How long to wait for speech to START before giving up on a listening
+# phase. Without this, record_utterance's only exit was "heard speech, then
+# heard silence" — so a phase where the user simply didn't speak ran the
+# FULL max_seconds. Measured live over 416 turns: 293 of them (70%) ended
+# in "didn't catch anything", each burning 15s of recording plus 10-29s of
+# Whisper chewing through 15s of pure silence — a 25-44 second window where
+# JARVIS looks completely dead before it says anything at all. That is the
+# "JARVIS is sleeping / sometimes it just doesn't respond" symptom, and it
+# is a bug, not a tuning problem. Real assistants give you a few seconds to
+# start talking and then quietly stand down.
+NO_SPEECH_BAIL_SECONDS = 3.0
 # Word-boundary contains-match, not exact set membership — seen live:
 # exact matching missed "Hey stop!" (normalizes to "hey stop", which isn't
 # in the set) and sent it to Ollama as a normal query instead of
@@ -120,6 +131,64 @@ def _is_bare_wake_phrase(text: str) -> bool:
     phrase to genuinely start a fresh conversation is unaffected.
     """
     return _normalize_for_compare(text) in _BARE_WAKE_PHRASES
+
+
+_LEADING_WAKE_PHRASE_RE = re.compile(
+    r"^(?:hey|hi|hej|hail)\s+(?:jarvis|jervis|jrvis)\b[!,.]?\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_leading_wake_phrase(text: str) -> str:
+    """Strips a re-said wake phrase from the start of an utterance that has
+    more to it than just the phrase — same STT variants as
+    _BARE_WAKE_PHRASES (accent-stripped, fused words, "Jervis"/"Hail
+    Jervis"), but as a prefix rather than a whole-utterance match. Seen
+    live: users often repeat the wake phrase out of habit mid-conversation,
+    and the misheard variant then ends up baked into the actual command
+    text, corrupting deterministic extraction downstream — a shell command
+    literally starting with "Hail Jervis, run the command, sleep 30" ran
+    `Hail` as the command and failed instead of ever running `sleep 30`.
+    """
+    stripped = _LEADING_WAKE_PHRASE_RE.sub("", text.strip(), count=1)
+    return stripped or text
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_for_speech(
+    text: str, first_min_chars: int = 40, min_chars: int = 140, max_chars: int = 300
+) -> list[str]:
+    """Break a reply into sentence-ish chunks for streaming synthesis.
+
+    The FIRST chunk is deliberately short and every later one is longer.
+    Measured against the live Sarvam API, synthesis cost is roughly a 0.6s
+    fixed overhead plus ~0.02s per character (4 chars 0.79s, 38 chars 1.46s,
+    142 chars 3.35s, 217 chars 5.34s) — so the only thing that decides how
+    long the user waits in silence is the length of the first chunk. Later
+    chunks are synthesized while earlier audio is still playing, where
+    there is plenty of slack (a 140-char chunk is ~9s of speech), so making
+    them bigger costs nothing and avoids choppy sentence-by-sentence
+    delivery. min_chars also stops us paying a whole round-trip for "Yes."
+    """
+    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text.strip()) if p.strip()]
+    chunks: list[str] = []
+    buf = ""
+    for part in parts:
+        buf = f"{buf} {part}".strip() if buf else part
+        threshold = first_min_chars if not chunks else min_chars
+        if len(buf) >= threshold:
+            chunks.append(buf)
+            buf = ""
+    if buf:
+        # A tiny trailing fragment rides along with the previous chunk
+        # rather than costing its own round-trip.
+        if chunks and len(buf) < 25:
+            chunks[-1] = f"{chunks[-1]} {buf}"
+        else:
+            chunks.append(buf)
+    return [c[:max_chars] for c in chunks]
 
 
 def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
@@ -230,6 +299,7 @@ class VoiceLoop:
         self.wake_word = cfg["voice_wake_word"]
         self.silence_rms_threshold = cfg["voice_silence_rms_threshold"]
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
+        self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
         self.audio_q: queue.Queue = queue.Queue()
         self._last_frame_at = time.monotonic()
         self.wake_event = threading.Event()
@@ -450,6 +520,7 @@ class VoiceLoop:
         silence_chunks = 0
         needed_silence_chunks = max(1, int(self.silence_seconds * SAMPLE_RATE / FRAME_SAMPLES))
         max_chunks = int(max_seconds * SAMPLE_RATE / FRAME_SAMPLES)
+        bail_chunks = max(1, int(self.no_speech_bail_seconds * SAMPLE_RATE / FRAME_SAMPLES))
         heard_speech = False
         max_rms = 0.0
         max_vad_prob = 0.0
@@ -480,6 +551,11 @@ class VoiceLoop:
                 silence_chunks += 1
             if heard_speech and silence_chunks >= needed_silence_chunks:
                 break
+            # Speech never started — stand down instead of recording (and
+            # then transcribing) the full max_seconds of silence. See
+            # NO_SPEECH_BAIL_SECONDS.
+            if not heard_speech and chunks_used >= bail_chunks:
+                break
 
         elapsed = chunks_used * FRAME_SAMPLES / SAMPLE_RATE
         print(
@@ -489,6 +565,56 @@ class VoiceLoop:
         recorded = np.concatenate(frames) if frames else np.array([], dtype=np.int16)
         return recorded, heard_speech
 
+    def _speak_streaming(
+        self,
+        text: str,
+        language_code: str,
+        barge_event: threading.Event,
+        playback_active: threading.Event,
+    ) -> bool:
+        """Speak `text` sentence-by-sentence. Returns False if interrupted.
+
+        The whole reply used to go to Sarvam in one call, so nothing was
+        audible until the entire thing had been synthesized — measured live
+        across 40 turns at a ~7s median and a 21.7s worst case of dead
+        silence before JARVIS said a single word. Synthesis of chunk N+1
+        overlaps playback of chunk N, so the only thing standing between
+        the user and the first word is one short sentence.
+        """
+        chunks = _split_for_speech(text)
+        if not chunks:
+            return True
+
+        wav_q: queue.Queue = queue.Queue()
+
+        def produce() -> None:
+            for chunk in chunks:
+                if barge_event.is_set():
+                    break
+                try:
+                    wav_q.put(sarvam_client.text_to_speech(chunk, language_code=language_code))
+                except sarvam_client.SarvamError as e:
+                    print(f"(Sarvam TTS unavailable: {e})")
+                    break
+            wav_q.put(None)
+
+        threading.Thread(target=produce, daemon=True).start()
+
+        first = True
+        while True:
+            wav_bytes = wav_q.get()
+            if wav_bytes is None:
+                return True
+            if barge_event.is_set():
+                return False
+            if first:
+                # Arm barge-in only once there's real audio, not during the
+                # network call that produces it.
+                playback_active.set()
+                first = False
+            if not cli.tts.play(wav_bytes, stop_event=barge_event):
+                return False
+
     def transcribe(self, audio: np.ndarray) -> str:
         if audio.size == 0:
             return ""
@@ -497,6 +623,27 @@ class VoiceLoop:
         return " ".join(seg.text.strip() for seg in segments).strip()
 
     def voice_confirm(self, prompt: str) -> bool:
+        # Nothing is actually running yet anywhere in this function — the
+        # task this prompt is asking about only starts AFTER it returns
+        # True. Seen live: processing_active (armed for cancel-while-
+        # executing, see _handle_turn_audio) being armed for any part of
+        # this — the prompt's own TTS, or just answering "yes" out loud —
+        # let ordinary interaction with the confirmation itself satisfy the
+        # barge-in sustain threshold and get misread as "stop, cancel the
+        # task" that hadn't started yet. Paused for the function's entire
+        # duration, not just around record_utterance, closes the gap
+        # completely without touching the real cancel-while-executing path.
+        processing_active = getattr(self, "_processing_active", None)
+        was_armed = processing_active is not None and processing_active.is_set()
+        if was_armed:
+            processing_active.clear()
+        try:
+            return self._voice_confirm_inner(prompt)
+        finally:
+            if was_armed:
+                processing_active.set()
+
+    def _voice_confirm_inner(self, prompt: str) -> bool:
         print(f"[Router] {prompt}")
         # Was self.speak() (cli.speak_response -> Piper), left over from
         # before the Bulbul-everywhere switch — every other reply plays
@@ -512,23 +659,7 @@ class VoiceLoop:
             except sarvam_client.SarvamError as e:
                 print(f"(Sarvam TTS unavailable: {e})")
         print("(listening for yes/no...)")
-        # Seen live: answering this prompt out loud ("yes") is itself
-        # sustained speech, and with processing_active armed the whole
-        # time cli.process_turn() runs (see _handle_turn_audio), that
-        # answer alone could satisfy the barge-in sustain threshold and
-        # get misread as "stop, cancel the task" — before the task had
-        # even started, since it's still waiting on this exact answer.
-        # Pausing arming for just this listen-and-answer window closes
-        # that gap without touching the real cancel-while-executing path.
-        processing_active = getattr(self, "_processing_active", None)
-        was_armed = processing_active is not None and processing_active.is_set()
-        if was_armed:
-            processing_active.clear()
-        try:
-            audio, heard_speech = self.record_utterance(max_seconds=CONFIRM_MAX_SECONDS)
-        finally:
-            if was_armed:
-                processing_active.set()
+        audio, heard_speech = self.record_utterance(max_seconds=CONFIRM_MAX_SECONDS)
         if not heard_speech:
             print("  (heard: nothing above the noise floor — treating as no.)")
             return False
@@ -632,8 +763,17 @@ class VoiceLoop:
         turn_start: float,
         wake_detected_at: float,
     ) -> str:
-        audio, _ = self.record_utterance()
+        audio, heard_speech = self.record_utterance()
         utterance_done_at = time.perf_counter()
+        # Skip Whisper entirely when the VAD is confident nothing was said.
+        # This return value used to be discarded here (`audio, _ = ...`),
+        # so every no-speech phase still paid the full transcription cost —
+        # measured live at 10-29s for a 15s silent buffer, on top of the
+        # 15s spent recording it. Silero already answered the only question
+        # transcription would have answered.
+        if not heard_speech:
+            print("(Didn't catch anything.)\n")
+            return last_reply_text
         text = self.transcribe(audio)
         transcription_done_at = time.perf_counter()
 
@@ -654,6 +794,8 @@ class VoiceLoop:
         if already_in_conversation and _is_bare_wake_phrase(text):
             print("(Already listening — no need to say the wake word again, go ahead.)\n")
             return last_reply_text
+
+        text = _strip_leading_wake_phrase(text)
 
         if last_reply_text and _looks_like_self_echo(text, last_reply_text):
             print("(Ignoring — sounds like my own voice bleeding into the mic, not a new command.)\n")
@@ -747,15 +889,9 @@ class VoiceLoop:
             print("(Skipping speech output because you already barged in.)")
         elif self.cfg.get("tts_enabled"):
             language_code = backend.split(":", 1)[1] if backend.startswith("sarvam:") else "en-IN"
-            try:
-                wav_bytes = sarvam_client.text_to_speech(response, language_code=language_code)
-                # Arm barge-in only once there's real audio, not
-                # during the (here, up to ~30s) network call that
-                # produces it.
-                playback_active.set()
-                interrupted = not cli.tts.play(wav_bytes, stop_event=barge_event)
-            except sarvam_client.SarvamError as e:
-                print(f"(Sarvam TTS unavailable: {e})")
+            interrupted = not self._speak_streaming(
+                response, language_code, barge_event, playback_active
+            )
 
         barge_event.set()
         if barge_monitor is not None:

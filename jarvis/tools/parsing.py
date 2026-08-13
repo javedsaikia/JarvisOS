@@ -142,7 +142,7 @@ def extract_note(text: str) -> tuple[str, str]:
 # command: ls -la"), the other doesn't (handles bare "Run ls -la").
 _SHELL_TRIGGER_WITH_COMMAND_RE = re.compile(
     r"^(?:please\s+)?(?:run|execute)\s+(?:this\s+|the\s+|following\s+|exact\s+)*"
-    r"(?:shell\s+)?command\s*[:\-]?\s*",
+    r"(?:shell\s+)?command\s*[:\-,]?\s*",
     re.IGNORECASE,
 )
 _SHELL_TRIGGER_BARE_RE = re.compile(

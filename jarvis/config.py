@@ -24,7 +24,13 @@ DEFAULTS = {
     "voice_wake_word": "hey_jarvis",
     "voice_stt_model": "small.en",
     "voice_context_turns": 6,
-    "voice_silence_seconds": 0.45,
+    # How much trailing silence ends an utterance. Was 0.45s, which cut
+    # people off mid-sentence whenever they paused to think — seen live,
+    # "run this command: sleep 30" was endpointed after "run this command."
+    # and the actual command was lost. 0.8s is roughly where mainstream
+    # assistants sit and costs only a third of a second more per turn.
+    "voice_silence_seconds": 0.8,
+    "voice_no_speech_bail_seconds": 3.0,
     "voice_silence_rms_threshold": 300,
     # Was 180 — seen live, a window that long meant any speech near the
     # mic (e.g. dictating a message to something else entirely) got picked
