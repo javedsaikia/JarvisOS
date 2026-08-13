@@ -540,9 +540,11 @@ class VoiceLoop:
         the user and the first word is one short sentence.
         """
         chunks = _split_for_speech(text)
+        self._last_ttfa = None
         if not chunks:
             return True
 
+        started_at = time.perf_counter()
         wav_q: queue.Queue = queue.Queue()
 
         def produce() -> None:
@@ -570,6 +572,7 @@ class VoiceLoop:
                 # network call that produces it.
                 playback_active.set()
                 first = False
+                self._last_ttfa = time.perf_counter() - started_at
             if not cli.tts.play(wav_bytes, stop_event=barge_event):
                 return False
 
@@ -855,13 +858,21 @@ class VoiceLoop:
         window = self.cfg.get("voice_conversation_window_seconds", 180)
         self.conversation_active_until = time.monotonic() + window
         spoken_done_at = time.perf_counter()
+        # ttfw (time to first word) is the number that actually describes
+        # how responsive this feels; the old single "tts=" figure lumped it
+        # together with how long the reply took to say out loud, so a long
+        # answer looked identical to a slow one. speak= is that speaking
+        # duration, which is supposed to be long for a long answer.
+        ttfa = getattr(self, "_last_ttfa", None)
+        ttfw = f"{ttfa:.2f}s" if ttfa is not None else "n/a"
         print(
             "  (timing: "
             f"wake={wake_detected_at - turn_start:.2f}s, "
             f"record={utterance_done_at - wake_detected_at:.2f}s, "
             f"stt={transcription_done_at - utterance_done_at:.2f}s, "
             f"llm={response_ready_at - transcription_done_at:.2f}s, "
-            f"tts={spoken_done_at - response_ready_at:.2f}s)"
+            f"ttfw={ttfw}, "
+            f"speak={spoken_done_at - response_ready_at:.2f}s)"
         )
         return last_reply_text
 
