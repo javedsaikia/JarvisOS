@@ -366,7 +366,12 @@ class VoiceLoop:
             if prediction.get(self.wake_word, 0.0) > WAKE_THRESHOLD:
                 return
 
-    def _watch_for_barge_in(self, stop_event: threading.Event, playback_active: threading.Event) -> None:
+    def _watch_for_barge_in(
+        self,
+        stop_event: threading.Event,
+        playback_active: threading.Event,
+        processing_active: threading.Event | None = None,
+    ) -> None:
         grace_deadline = time.perf_counter() + self.barge_in_grace_seconds
         sustained = 0
         while not stop_event.is_set():
@@ -376,7 +381,8 @@ class VoiceLoop:
                 continue
             with self._barge_frames_lock:
                 self._barge_frames.append(frame)
-            if not playback_active.is_set():
+            processing = processing_active is not None and processing_active.is_set()
+            if not playback_active.is_set() and not processing:
                 # This thread starts before the response is ready (needed
                 # so streaming Ollama playback can be barged in on the
                 # instant it begins). For slow, non-streaming backends —
@@ -385,6 +391,11 @@ class VoiceLoop:
                 # speech during that dead air used to get misread as
                 # barging in on a reply that hadn't made a sound yet,
                 # silently skipping it before the user ever heard anything.
+                # processing_active (set only around cli.process_turn) is
+                # the one deliberate exception: real "stop while it's still
+                # working" cancellation, not the reply-skip this comment
+                # originally warned about — see the cancel_current() calls
+                # below.
                 sustained = 0
                 continue
             if time.perf_counter() < grace_deadline:
@@ -394,7 +405,15 @@ class VoiceLoop:
             if rms > self.barge_in_threshold:
                 sustained += 1
                 if sustained >= self.barge_in_sustain_chunks:
-                    print(f"(Barge-in detected — stopping speech. RMS {rms:.0f} vs threshold {self.barge_in_threshold:.0f})")
+                    if processing and not playback_active.is_set():
+                        print(
+                            f"(Stop detected while working — cancelling that task. "
+                            f"RMS {rms:.0f} vs threshold {self.barge_in_threshold:.0f})"
+                        )
+                        cli.claude_handoff.cancel_current()
+                        cli.shell.cancel_current()
+                    else:
+                        print(f"(Barge-in detected — stopping speech. RMS {rms:.0f} vs threshold {self.barge_in_threshold:.0f})")
                     stop_event.set()
                     return
             else:
@@ -643,6 +662,13 @@ class VoiceLoop:
         # response exists, so real-time streaming playback can be
         # barged in on the instant it begins).
         playback_active = threading.Event()
+        # Armed for the entire cli.process_turn() call below (LLM
+        # generation, Claude Code handoff, shell execution — not just TTS
+        # playback) — explicitly requested: saying "stop" should actually
+        # kill an in-flight task (Claude Code can run for minutes), not
+        # just silence the eventual reply once it's done. See the
+        # cancel_current() calls in _watch_for_barge_in.
+        processing_active = threading.Event()
         barge_monitor = None
         # Re-checked every turn, not just at calibration — headphones can
         # get plugged in or removed mid-session. On open speakers, JARVIS's
@@ -659,23 +685,35 @@ class VoiceLoop:
             self.barge_in_threshold, self.barge_in_sustain_chunks = self._compute_barge_in_params()
             barge_monitor = threading.Thread(
                 target=self._watch_for_barge_in,
-                args=(barge_event, playback_active),
+                args=(barge_event, playback_active, processing_active),
                 daemon=True,
             )
             barge_monitor.start()
 
-        backend, response = cli.process_turn(
-            _apply_language_trigger(text),
-            self.cfg,
-            mem,
-            interactive=True,
-            confirm_fn=self.voice_confirm,
-            recent_turns_limit=self.cfg.get("voice_context_turns", 6),
-            model_override=self.cfg.get("voice_ollama_model", self.cfg["ollama_model"]),
-            ollama_options={"num_predict": self.cfg.get("voice_ollama_max_tokens", 128)},
-            stream_callback=None,
-            source="voice",
-        )
+        processing_active.set()
+        try:
+            backend, response = cli.process_turn(
+                _apply_language_trigger(text),
+                self.cfg,
+                mem,
+                interactive=True,
+                confirm_fn=self.voice_confirm,
+                recent_turns_limit=self.cfg.get("voice_context_turns", 6),
+                model_override=self.cfg.get("voice_ollama_model", self.cfg["ollama_model"]),
+                ollama_options={"num_predict": self.cfg.get("voice_ollama_max_tokens", 128)},
+                stream_callback=None,
+                source="voice",
+            )
+        except (cli.claude_handoff.Cancelled, cli.shell.Cancelled):
+            print("(Cancelled — ready for your next instruction.)\n")
+            barge_event.set()
+            if barge_monitor is not None:
+                barge_monitor.join(timeout=1)
+            window = self.cfg.get("voice_conversation_window_seconds", 180)
+            self.conversation_active_until = time.monotonic() + window
+            return ""
+        finally:
+            processing_active.clear()
         response_ready_at = time.perf_counter()
         print(f"{cli.label(backend)} {response}\n")
         last_reply_text = response

@@ -141,6 +141,11 @@ def handle_claude_code(user_text: str, cfg: dict, interactive: bool, confirm_fn=
 
     try:
         return claude_handoff.invoke(user_text, cfg["claude_code_command"])
+    except claude_handoff.Cancelled:
+        # Propagate — the voice loop catches this specifically to skip
+        # speaking a stale/error response and go straight back to
+        # listening, rather than reporting it as a failure.
+        raise
     except claude_handoff.ClaudeCodeError as e:
         return f"(Claude Code handoff failed: {e})"
 
@@ -165,6 +170,8 @@ def handle_email(user_text: str, cfg: dict) -> str:
     )
     try:
         return claude_handoff.invoke(task, cfg["claude_code_command"])
+    except claude_handoff.Cancelled:
+        raise
     except claude_handoff.ClaudeCodeError as e:
         return f"(Email check failed: {e})"
 
@@ -185,6 +192,8 @@ def handle_spotify(user_text: str, cfg: dict) -> str:
     )
     try:
         return claude_handoff.invoke(task, cfg["claude_code_command"])
+    except claude_handoff.Cancelled:
+        raise
     except claude_handoff.ClaudeCodeError as e:
         return f"(Spotify check failed: {e})"
 
@@ -248,6 +257,8 @@ def execute_file_tool(name: str, arguments: dict, cfg: dict, interactive: bool, 
             if interactive and not confirm_fn(f"Run shell command: `{command}` ?"):
                 return "Cancelled by user — command not run."
             return shell.run(command)
+    except shell.Cancelled:
+        raise  # voice loop catches this specifically, see handle_claude_code
     except (files.FileToolError, shell.ShellError) as e:
         return f"Tool error: {e}"
     return f"Unknown tool: {name}"
@@ -270,6 +281,8 @@ def handle_shell(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_c
 
     try:
         result = shell.run(command)
+    except shell.Cancelled:
+        raise
     except shell.ShellError as e:
         return f"Shell error: {e}"
     return f"Ran `{command}`:\n{result}"
@@ -604,6 +617,12 @@ def handle_tool(
 
         if domain == "call":
             return handle_call(user_text, cfg, interactive, confirm_fn)
+    except (claude_handoff.Cancelled, shell.Cancelled):
+        # Must reach voice_loop.py's own handler around cli.process_turn()
+        # uncaught — that's what decides to skip TTS and go straight back
+        # to listening instead of speaking a "tool failed" error for a
+        # cancellation the user asked for on purpose.
+        raise
     except Exception as e:
         return f"({domain.capitalize()} tool failed: {e})"
 
