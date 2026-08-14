@@ -43,12 +43,38 @@ DEFAULTS = {
     # up as a JARVIS follow-up command for minutes after the last real
     # exchange, with no wake word required to re-arm it.
     "voice_conversation_window_seconds": 25,
+    # Master switch for everything that looks at the screen — "what's on
+    # my screen?", and the live screen card below. False disables the lot.
     "vision_enabled": True,
     # Live screen card in the web UI (bridge._screen_feed_loop). Real
     # screenshots of your desktop, pushed to the browser every 2s while a
     # tab is open — set false to disable it outright, regardless of the
     # UI's own toggle.
     "screen_feed_enabled": True,
+    # --- "What's on my screen?" (jarvis/screen_capture.py + tools/vision.py)
+    # macOS reads the screen text on-device (Vision framework) and the
+    # local text model answers from it. A small vision model cannot read a
+    # Retina screenshot — measured, see tools/vision.py — so OCR is the
+    # primary path and the vision model is the fallback for screens with
+    # no text on them.
+    "screen_ocr_enabled": True,
+    # Answers about screen text. Small and fast beats clever here: this
+    # runs on every "what's on my screen", including spoken ones.
+    "screen_text_model": "qwen2.5:1.5b",
+    "screen_max_tokens": 220,
+    # Window title marked as JARVIS's own and left out of the capture, so
+    # the HUD is never what JARVIS describes.
+    "screen_hud_window_marker": "J.A.R.V.I.S.",
+    # Only used when native window-excluding capture is unavailable: ask
+    # the web UI to blank itself, wait, then screenshot everything.
+    "screen_hide_ui": True,
+    "screen_hide_delay_ms": 400,
+    # Paid cloud vision fallback. Off by default, and even when on it
+    # still asks before sending anything — a screenshot is about the most
+    # sensitive thing this machine can send anywhere. Needs GEMINI_API_KEY
+    # in jarvis/.env.
+    "screen_cloud_fallback": False,
+    "screen_cloud_model": "gemini-2.0-flash",
     "vision_ollama_model": "moondream",
     "browser_enabled": True,
     "location_enabled": True,

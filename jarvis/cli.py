@@ -348,15 +348,22 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
         return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
 
 
-def handle_screen(user_text: str, cfg: dict) -> str:
+def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
+                  confirm_fn=text_confirm) -> str:
     """Read-only — same tier as calendar/notes/email reads, no confirm.
     Deterministic router match (router.SCREEN_PATTERNS), not LLM-mediated,
     since there's nothing to extract from the phrasing.
+
+    Looking at the screen stays unconfirmed because it is local, free and
+    read-only. interactive/confirm_fn are passed through only for the
+    optional paid cloud fallback, which is off by default and confirms
+    before any image leaves the machine (see vision.describe_screen).
     """
     if not cfg.get("vision_enabled", True):
         return "Screen understanding is disabled in config."
     try:
-        return vision.describe_screen(user_text, cfg)
+        return vision.describe_screen(user_text, cfg, interactive=interactive,
+                                      confirm_fn=confirm_fn)
     except vision.VisionError as e:
         return f"(Screen check failed: {e})"
 
@@ -642,7 +649,7 @@ def handle_tool(
             return handle_files_shell(user_text, cfg, mem, interactive, confirm_fn)
 
         if domain == "screen":
-            return handle_screen(user_text, cfg)
+            return handle_screen(user_text, cfg, interactive, confirm_fn)
 
         if domain == "browser":
             return handle_browser(user_text, cfg, mem, interactive, confirm_fn)

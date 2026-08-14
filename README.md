@@ -54,6 +54,7 @@ naming Ollama in the transcript read like a second assistant had replied.
 | `jarvis/persona.py` | JARVIS system prompt — personality, addresses you by name |
 | `jarvis/tts.py` | Piper text-to-speech (synthesize/play split for the web UI — see [Web UI](#web-ui)) |
 | `jarvis/tools/` | Calendar, Notes, files, shell, and the file/shell tool-call registry |
+| `jarvis/screen_capture.py` | Native screen capture (excludes the JARVIS window) + on-device OCR |
 | `jarvis/bridge.py` | WebSocket bridge for the web UI — presentation-layer glue only, zero routing/cost logic of its own |
 | `jarvis/.venv/` | Isolated Python env for Piper/openWakeWord/faster-whisper/websockets (never touches system Python) |
 | `jarvis/config.json` | All settings — see [Config](#config) |
@@ -100,7 +101,12 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `voice_silence_seconds` — how long the voice loop waits after you stop speaking before it hands off to STT
 - `voice_silence_rms_threshold` — mic energy level below which the voice loop considers you done talking; raise it in a noisy room, lower it if it cuts you off early
 - `vision_enabled` — set `false` to fully disable screen understanding (default `true`)
-- `vision_ollama_model` — local Ollama vision model for `describe_screen()` (default `"moondream"`, `ollama pull moondream` first)
+- `vision_ollama_model` — local Ollama vision model, used only for screens with almost no text (default `"moondream"`, `ollama pull moondream` first)
+- `screen_ocr_enabled` — read the screen with macOS on-device OCR (default `true`; the primary path — see [Screen understanding](#screen-understanding-read-only-never-confirmed))
+- `screen_text_model` — local model that answers *specific* questions about screen text (default `"qwen2.5:1.5b"`; a bigger model is more accurate and slower)
+- `screen_hud_window_marker` — window title treated as JARVIS's own and left out of the capture (default `"J.A.R.V.I.S."`)
+- `screen_hide_ui` / `screen_hide_delay_ms` — blank the web UI before a fallback screenshot, and how long to wait first (only used when native capture is unavailable)
+- `screen_cloud_fallback` / `screen_cloud_model` — paid cloud vision fallback, off by default; needs `GEMINI_API_KEY` in `jarvis/.env` and still asks before sending anything
 - `screen_feed_enabled` — the web UI's live Screen Feed card, which screenshots this Mac every 2s while a tab is open; set `false` to disable it regardless of the UI's own toggle (default `true`)
 - `browser_enabled` — set `false` to fully disable browser control (default `true`)
 - `location_enabled` — set `false` to fully disable weather/nearby-places/Maps (default `true`)
@@ -239,31 +245,94 @@ be fully disabled via config (`vision_enabled` / `browser_enabled`).
 
 **One-time setup** (not needed for anything else in this project):
 ```bash
-ollama pull moondream                          # local vision model, ~1.6GB
+jarvis/.venv/bin/pip install pyobjc-framework-Vision   # on-device OCR, ~1MB
+ollama pull moondream                          # local vision model, ~1.6GB (text-free screens only)
 jarvis/.venv/bin/pip install playwright
 jarvis/.venv/bin/playwright install chromium   # ~150-300MB
 ```
+`pyobjc-framework-Quartz` is already a dependency (Maps/CoreLocation use
+it), and Vision comes from the same family — together they give native
+capture and OCR with nothing else added. Without them the feature still
+works, via `screencapture` and the vision model, just less well.
+
 Screenshots require macOS's "Screen Recording" permission — grant it once
 to whatever app hosts this process (Terminal, etc.) in
 System Settings > Privacy & Security > Screen Recording, then restart the
-voice loop/bridge. `jarvis/tools/vision.py` raises a clear error naming
-this exact fix if the permission is missing rather than failing silently.
+voice loop/bridge. JARVIS detects a missing grant *before* capturing (other
+apps' window titles are privileged the same way pixels are) and says
+exactly what to do, rather than silently describing a blank desktop.
 
 ### Screen understanding (read-only, never confirmed)
 
-"What's on my screen?", "describe what I'm looking at", "what's on this
-page?", "what do you see?", "take a screenshot" → `[Screen]`. Deterministic
-router match (`router.SCREEN_PATTERNS`), not LLM-mediated — there's nothing
-to extract from the phrasing. `jarvis/tools/vision.py` shells out to
-macOS's built-in `screencapture -x` (silent, no camera-shutter sound), then
-sends the image to a **local** Ollama vision model (`moondream` by
-default) — no cloud call, no API key. Same tier as calendar/notes/email
-reads: automatic, no confirmation.
+"What's on my screen?", "describe what I'm looking at", "what do you see?",
+"what does the screen say about X?", "read the error on my screen" →
+`[Screen]`. Deterministic router match (`router.SCREEN_PATTERNS`), not
+LLM-mediated. Same tier as calendar/notes/email reads: automatic, local,
+free, no confirmation.
 
-Quality note: `moondream` is small and free; its descriptions are more
-generic than a larger cloud vision model would give. That trade-off was
-chosen deliberately (private, zero ongoing cost, matches this project's
-local-first design) — there's no cloud fallback in this version.
+**The capture is native, and JARVIS is not in it.** The HUD is a web page,
+so nothing it can capture is more than its own tab — capture therefore
+happens in Python, through macOS's window server
+(`jarvis/screen_capture.py`). More importantly, with the HUD open the
+honest answer to "what's on my screen" was "a glowing blue orb". Rather
+than minimising the window and hoping, the screen is composited from the
+window list **with the JARVIS window left out**
+(`CGWindowListCreateImageFromArray`): everything else is captured exactly
+as it is, including other windows of the same browser, with no hiding, no
+delay and no flicker. Runs in ~0.1s.
+
+**The screen is read with OCR, not guessed at from a thumbnail.** Measured
+on a real capture: `moondream` returned *"a computer screen with a black
+background and white text"*, because a small vision model downsamples a
+Retina screenshot until every label is mush. macOS's Vision framework OCRs
+the same image on-device in about a second, for free. So the pipeline is:
+
+| Question | Path | Typical |
+|---|---|---|
+| "what's on my screen?" | window list + OCR, assembled directly — **no model call at all** | ~2s |
+| "what does the screen say about X?" | OCR text + the local text model | ~8s |
+| a screen with almost no text | the local vision model on the image | ~3s (warm) |
+| local vision fails, cloud fallback on | Gemini — **only after you confirm** | opt-in |
+
+The generic question is answered without inference on purpose. Handed a
+desktop's worth of OCR and asked to summarize, the small local models
+invented every time — a URL that wasn't on screen, an integration that
+doesn't exist. The window server already knows exactly which app is in
+front and what else is open, and the OCR already knows which line is drawn
+largest, so JARVIS states those instead: *"You're in Visual Studio Code, on
+'JarvisOS'. Safari, Terminal and Notes are also open. The largest text on
+screen reads ..."*. Always true, and faster than a model call.
+
+**Permissions.** This needs **Screen Recording**, granted to whatever app
+starts JARVIS (your Terminal, if you use `./start_jarvis.sh`) in System
+Settings > Privacy & Security > Screen Recording. Without it JARVIS says
+so in plain language instead of describing a blank desktop — window titles
+are privileged the same way pixels are, so a missing grant is detected
+before anything is captured (`screen_capture.has_permission()`).
+
+**Turning it off.** `vision_enabled: false` disables everything that looks
+at the screen. Finer control: `screen_ocr_enabled` (OCR path),
+`screen_feed_enabled` (the live card in the UI), `screen_cloud_fallback`
+(paid cloud vision, off by default and confirmed even when on).
+
+**Hide/restore.** If the native path is unavailable (no pyobjc), JARVIS
+falls back to `screencapture`, which photographs everything including the
+HUD. In that case only, it publishes a `screen_capture` phase event; the
+bridge relays it and the web UI blanks itself for the shot, then comes
+back. A browser page cannot minimise its own window, so blanking is the
+most a web front end can do — which is exactly why the native exclusion is
+the primary path.
+
+**Limitations.**
+- One display: the composite covers the main desktop, not a second monitor.
+- Reading order is approximate. OCR returns lines with positions, not
+  document structure, so a dense multi-column screen can read jumbled.
+- Specific questions inherit the small local model's limits — it will
+  occasionally answer confidently about something adjacent to what you
+  asked. Point `screen_text_model` at a bigger local model if that matters
+  more than latency.
+- It reads; it does not click. Anything that acts on the screen would go
+  through the existing confirmation gates, and nothing here does that.
 
 ### Browser control (Playwright, confirmed before anything happens)
 

@@ -17,7 +17,10 @@ Transport is a JSONL file the bridge tails, matching how voice-loop
 transcript turns already reach the UI (bridge._transcript_poll_loop):
 voice_loop.py is a separate OS process that must keep working with no
 bridge running at all, so it publishes to a file and nothing here ever
-depends on anyone reading it.
+depends on anyone reading it. That property is why this is also the
+channel for screen-capture phases (see screen_capture_phase) — a spoken
+"what's on my screen?" is handled entirely inside voice_loop.py, which
+has no connection to the browser at all.
 """
 import io
 import json
@@ -112,6 +115,19 @@ def speaking(wav_bytes: bytes) -> None:
         "hz": ENVELOPE_HZ,
         "duration": round(duration, 3),
     })
+
+
+def screen_capture_phase(phase: str) -> None:
+    """Tell the web UI to get out of the way of a screenshot, and later
+    that it can come back. `phase` is "start" or "end".
+
+    Only used on the fallback capture path: the native path composites the
+    screen without the HUD window (see jarvis/screen_capture.py), so there
+    is nothing to hide and the UI never flickers. A browser page cannot
+    minimise its own window, so "hide" here means the HUD blanks itself —
+    enough to keep a wall of glowing orb out of the screenshot.
+    """
+    _write({"type": "screen_capture", "phase": phase})
 
 
 def speaking_stopped() -> None:

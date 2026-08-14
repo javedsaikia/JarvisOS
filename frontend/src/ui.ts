@@ -213,6 +213,19 @@ export class UI {
     }
   }
 
+  /** Blank the HUD while the backend screenshots the desktop.
+   *
+   * A web page cannot minimise its own window, so "hiding" is the most a
+   * browser front end can do — the CSS drops every HUD layer to nothing
+   * and leaves one small caption, so a capture that does include this
+   * window shows an almost-empty screen instead of a wall of glowing orb.
+   * Normally this never fires: the native capture path composites the
+   * screen without this window in the first place.
+   */
+  setCapturing(capturing: boolean): void {
+    document.documentElement.dataset.capturing = capturing ? "on" : "off";
+  }
+
   setScreenFrame(base64Jpeg: string): void {
     // A frame already in flight when the feed is switched off would
     // otherwise land afterwards and quietly flip the card back to "Live"

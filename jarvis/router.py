@@ -295,6 +295,13 @@ SCREEN_PATTERNS = [
     r"\b(describe|read|check|look at|analyse|analyze) (my |the |this )?screen\b",
     r"\bcan you see (my |the )?screen\b",
     r"\bwhat('s| is) (this|that) on (my |the )?screen\b",
+    # Questions *about* something on the screen, rather than a request for
+    # a general description. These used to fall through to plain chat,
+    # where the model has no screen and cheerfully invented an answer —
+    # "what does the screen say about the installer stages?" produced a
+    # confident description of an installer that was never on screen.
+    r"\bwhat does (my |the )?screen say\b",
+    r"\b(read|check|find|describe|explain|summari[sz]e)\b[^.?!]{0,40}\bon (my|the) screen\b",
 ]
 
 # Browser actions are LLM-mediated (like FILES_PATTERNS below) — click

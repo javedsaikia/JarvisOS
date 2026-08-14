@@ -1104,6 +1104,39 @@ html[data-status="thinking"] .spin-ccw { animation-duration: 38s; }
 html[data-status="speaking"] .spin-cw { animation-duration: 34s; }
 html[data-status="speaking"] .spin-ccw { animation-duration: 52s; }
 
+/* ── Getting out of the shot ─────────────────────────────────────────────
+   Set while the backend is screenshotting the desktop on the fallback
+   capture path (see ui.setCapturing). A page can't minimise its window,
+   so it does the next best thing: everything fades out except one small
+   caption saying why the screen just went dark. Fast in, slower out, so
+   the capture isn't waiting on the fade. */
+
+/* #app carries the ambient gradient, and it is the element being faded
+   *through*, so it gets flattened too — otherwise the "hidden" HUD still
+   glows blue in the screenshot. */
+html[data-capturing="on"] body,
+html[data-capturing="on"] #app { background: #000; }
+html[data-capturing="on"] #app > *:not(#capture-notice) {
+  opacity: 0;
+  transition: opacity 0.12s linear;
+}
+#app::after {
+  content: "CAPTURING SCREEN";
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 9;
+  font-size: 9px;
+  letter-spacing: 0.3em;
+  color: var(--text-dim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s linear;
+}
+html[data-capturing="on"] #app::after { opacity: 0.5; }
+html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
+
 /* ── Responsive ──────────────────────────────────────────────────────── */
 
 /* The left rail holds the controls now, so it can never be hidden the way

@@ -19,6 +19,10 @@ export type ServerMessage =
   | { type: "voice_audio_end" }
   | { type: "screen_frame"; data?: string; error?: string }
   | { type: "screen_feed_state"; enabled: boolean }
+  // "I'm about to screenshot the desktop — get out of the shot." Only
+  // arrives on the fallback capture path; normally the HUD's window is
+  // composited out natively and the UI never hears about it.
+  | { type: "screen_capture"; phase: "start" | "end" }
   | {
       type: "spotify_state";
       active: boolean;

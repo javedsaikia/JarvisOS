@@ -34,7 +34,8 @@ from websockets.exceptions import ConnectionClosed
 from jarvis import cli, tts, voice_events
 from jarvis.config import load_config
 from jarvis.memory import LOG_PATH, MemoryStore
-from jarvis.tools import spotify, vision
+from jarvis import screen_capture
+from jarvis.tools import spotify
 
 HOST = "localhost"
 PORT = 8765
@@ -506,6 +507,25 @@ async def _voice_events_poll_loop() -> None:
                 }))
             elif event.get("type") == "speaking_end":
                 await _broadcast(json.dumps({"type": "voice_audio_end"}))
+            elif event.get("type") == "screen_capture":
+                # "Get out of the way, I'm taking a screenshot" — only
+                # sent on the fallback capture path (jarvis/screen_capture.py
+                # normally excludes the HUD window instead of hiding it).
+                await _broadcast(json.dumps({
+                    "type": "screen_capture", "phase": event.get("phase", "end"),
+                }))
+
+
+def _capture_feed_frame() -> bytes:
+    """One frame for the UI's screen card, with the HUD window left out.
+
+    Without the exclusion the card showed the page it was rendered in —
+    an infinite hall of mirrors, and useless as a view of the desktop.
+    """
+    with _cfg_lock:
+        marker = cfg.get("screen_hud_window_marker", "J.A.R.V.I.S.")
+    jpeg, _meta = screen_capture.capture(hud_marker=marker, max_width=640)
+    return jpeg
 
 
 async def _screen_feed_loop() -> None:
@@ -529,8 +549,8 @@ async def _screen_feed_loop() -> None:
             if not cfg.get("screen_feed_enabled", True):
                 continue
         try:
-            jpeg = await loop.run_in_executor(None, vision.capture_screen_jpeg)
-        except vision.VisionError as e:
+            jpeg = await loop.run_in_executor(None, _capture_feed_frame)
+        except screen_capture.ScreenCaptureError as e:
             await _broadcast(json.dumps({"type": "screen_frame", "error": str(e)}))
             return
         except Exception:

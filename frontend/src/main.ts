@@ -151,6 +151,10 @@ socket.onMessage((msg: ServerMessage) => {
       ui.setScreenFeedState(msg.enabled);
       break;
     }
+    case "screen_capture": {
+      ui.setCapturing(msg.phase === "start");
+      break;
+    }
     case "spotify_state": {
       spotifyWidget.update(msg);
       break;
