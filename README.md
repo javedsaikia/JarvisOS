@@ -334,10 +334,24 @@ real app) can't depend on a model reliably choosing to call a tool.
 "where's the nearest gas station?" → `[Location]`. Same tier as
 calendar/notes/email reads: automatic, no confirmation.
 
-- **Location**: prefers `CoreLocationCLI` (real GPS) if it's already
-  installed (`shutil.which` — this project never installs it for you);
-  otherwise falls back to free IP-based geolocation (`ipwho.is`, HTTPS,
-  no key). For meaningfully better accuracy: `brew install corelocationcli`.
+- **Location**: prefers `CoreLocationCLI` (real GPS) if it's installed
+  (`shutil.which` — this project never installs it for you); otherwise
+  falls back to free IP-based geolocation (`ipwho.is`, HTTPS, no key).
+
+  **Strongly recommended**, because the IP fallback resolves to your
+  ISP's gateway city — measured ~300km off here, reporting Guwahati for a
+  user in Jorhat, which silently poisons weather and nearby-places too:
+
+  ```sh
+  brew install --cask corelocationcli
+  CoreLocationCLI --format "%latitude|%longitude|%locality"   # triggers the permission prompt
+  ```
+
+  Then enable it under **System Settings → Privacy & Security → Location
+  Services** (both the global toggle and the CoreLocationCLI entry).
+  Until that is granted the binary just errors and JARVIS stays on IP.
+  When it does fall back, spoken answers say "near \<city\>, going by your
+  network location" rather than stating the place as fact.
 - **Weather**: [Open-Meteo](https://open-meteo.com/) — free, no API key.
 - **Nearby places**: OpenStreetMap's Overpass API — free, no API key.
   Tries three known public mirrors in sequence (the main instance

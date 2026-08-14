@@ -3,12 +3,17 @@ stdlib `urllib` only. Same pattern as spotify_client.py/sarvam_client.py:
 a thin wrapper around an external REST API, no SDK dependency.
 
 Location: CoreLocationCLI (https://github.com/fulldecent/corelocationcli)
-if it's already installed (`shutil.which`) — this project never installs
-it automatically, only uses it if present. Falls back to IP-based
-geolocation via ipwho.is (HTTPS, no key). CoreLocationCLI's exact CLI
-flags are per its documented interface (`-once -format`), not verified
-live in this environment since it isn't installed here; the IP fallback
-IS verified live and is what actually runs on a fresh setup.
+if it's installed (`shutil.which`) — this project never installs it
+automatically, only uses it if present. Now verified live: it needs
+Location Services enabled for it in System Settings, and its real
+interface is `--format` (there is no `-once`; printing once is the
+default) with `%locality` giving Apple's own reverse-geocoded city name.
+
+Falls back to IP-based geolocation via ipwho.is (HTTPS, no key) only when
+GPS is genuinely unavailable. That fallback resolves to the ISP's gateway
+city, which measured ~300km off here (Guwahati reported while the user was
+in Jorhat), so callers are expected to surface the difference rather than
+present it as a definite position — see tools/location._place_phrase.
 
 Weather: Open-Meteo (api.open-meteo.com) — verified live, no key.
 Nearby places: OpenStreetMap Overpass API — verified live, no key.
@@ -17,6 +22,7 @@ import json
 import math
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -75,23 +81,91 @@ class LocationError(Exception):
     pass
 
 
+def _reverse_geocode(lat: float, lon: float) -> str | None:
+    """Coordinates -> a place name, via OpenStreetMap Nominatim (free, no
+    key, same OSM family already used for nearby places). Only the IP
+    provider hands back a city name for free; without this the GPS path —
+    the accurate one — could not say where you actually are.
+    """
+    params = urllib.parse.urlencode(
+        {"lat": lat, "lon": lon, "format": "json", "zoom": 10, "addressdetails": 1}
+    )
+    req = urllib.request.Request(
+        f"https://nominatim.openstreetmap.org/reverse?{params}",
+        headers={"User-Agent": _USER_AGENT},  # Nominatim rejects requests without one
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+    address = data.get("address") or {}
+    # state_district is checked ahead of county deliberately. For this
+    # address OSM returns county "Jorhat West" (an administrative
+    # sub-division) but state_district "Jorhat", and the district is what
+    # a person actually calls the place they are in. Where a real city or
+    # town name exists it still wins, since those come first.
+    for key in ("city", "town", "municipality", "village", "state_district", "county", "state"):
+        if address.get(key):
+            return address[key]
+    return None
+
+
+# A GPS fix stays valid far longer than a weather query takes, so a recent
+# one is reused when CoreLocation transiently has nothing. Without this a
+# single blip drops the answer back to the ISP's gateway city — the exact
+# 300km error this whole path exists to avoid.
+_GPS_CACHE: dict | None = None
+_GPS_CACHE_AT: float = 0.0
+_GPS_CACHE_TTL_SECONDS = 300
+
+
 def _corelocation() -> dict | None:
+    global _GPS_CACHE, _GPS_CACHE_AT
     binary = shutil.which("CoreLocationCLI")
     if not binary:
         return None
-    try:
-        result = subprocess.run(
-            [binary, "-once", "-format", "%latitude,%longitude"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return None
-        lat_str, lon_str = result.stdout.strip().split(",")
-        return {"lat": float(lat_str), "lon": float(lon_str), "source": "corelocation"}
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        return None
+
+    # Pipe-separated, not comma: the tool ignores literal separators in
+    # -format and prints space-separated, so the previous "%latitude,%longitude"
+    # + split(",") produced a single field, raised ValueError on unpack, and
+    # was swallowed — the GPS path silently never worked and every lookup
+    # quietly fell through to IP. A pipe also survives place names
+    # containing spaces. %locality is Apple's own reverse geocoding, which
+    # saves a network round-trip and returns "Jorhat" directly.
+    fmt = "%latitude|%longitude|%locality"
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                [binary, "--format", fmt], capture_output=True, text=True, timeout=15
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            break
+        output = result.stdout.strip()
+        if result.returncode == 0 and "|" in output:
+            parts = output.split("|")
+            try:
+                lat, lon = float(parts[0]), float(parts[1])
+            except ValueError:
+                break
+            city = parts[2].strip() if len(parts) > 2 else ""
+            location = {
+                "lat": lat,
+                "lon": lon,
+                "source": "gps",
+                "city": city or _reverse_geocode(lat, lon),
+            }
+            _GPS_CACHE, _GPS_CACHE_AT = location, time.monotonic()
+            return location
+        # kCLErrorDomain error 0 (location unknown) — CoreLocation simply
+        # has no fix yet and returns immediately rather than waiting.
+        # Observed clearing on its own within a couple of seconds.
+        if attempt < 2:
+            time.sleep(1.5)
+
+    if _GPS_CACHE and time.monotonic() - _GPS_CACHE_AT < _GPS_CACHE_TTL_SECONDS:
+        return _GPS_CACHE
+    return None
 
 
 def _ip_location() -> dict | None:

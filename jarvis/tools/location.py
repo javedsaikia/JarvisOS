@@ -49,10 +49,26 @@ def detect_category(text: str) -> str | None:
     return None
 
 
+def _place_phrase(loc: dict) -> str:
+    """' in <place>', flagged when the position is only IP-approximate.
+
+    IP geolocation resolves to the ISP's gateway city, which was reporting
+    Guwahati while the user was in Jorhat — roughly 300km out, and silently,
+    so the wrong weather and wrong nearby places looked authoritative. When
+    the fix is not from GPS, say so rather than stating it flatly.
+    """
+    city = loc.get("city")
+    if not city:
+        return ""
+    if loc.get("source") == "gps":
+        return f" in {city}"
+    return f" near {city}, going by your network location"
+
+
 def describe_weather() -> str:
     loc = lc.get_location()
     weather = lc.get_weather(loc["lat"], loc["lon"])
-    place = f' in {loc["city"]}' if loc.get("city") else ""
+    place = _place_phrase(loc)
     temp = weather["temperature_c"]
     return f'It\'s currently {temp:.0f}\N{DEGREE SIGN}C with {weather["condition"]}{place}.'
 
