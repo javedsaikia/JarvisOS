@@ -21,5 +21,10 @@
   "ollama_keep_alive": "30m",
   "voice_context_turns": 6,
   "voice_conversation_window_seconds": 25,
-  "voice_wake_listen_seconds": 10.0
+  "voice_wake_listen_seconds": 10.0,
+  "push_to_talk_enabled": true,
+  "push_to_talk_combo": [
+    "ctrl",
+    "alt"
+  ]
 }

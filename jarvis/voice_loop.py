@@ -27,7 +27,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from jarvis import cli, sarvam_client
+from jarvis import cli, hotkey, sarvam_client
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.tools import spotify
@@ -385,6 +385,12 @@ class VoiceLoop:
         # Kept so calibrate() always re-derives from the configured floor
         # rather than from its own previous (possibly inflated) result.
         self._base_silence_rms_threshold = cfg["voice_silence_rms_threshold"]
+        self.push_to_talk = None
+        if cfg.get("push_to_talk_enabled", True):
+            combo = tuple(cfg.get("push_to_talk_combo", hotkey.DEFAULT_COMBO))
+            self.push_to_talk = hotkey.PushToTalk(combo, on_press=self._on_push_to_talk)
+            if not self.push_to_talk.start():
+                self.push_to_talk = None
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
         self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
         self.wake_listen_seconds = cfg.get("voice_wake_listen_seconds", WAKE_LISTEN_SECONDS)
@@ -414,6 +420,17 @@ class VoiceLoop:
 
     def trigger_wake(self) -> None:
         self.wake_event.set()
+
+    def _on_push_to_talk(self) -> None:
+        """Hotkey pressed: start a turn immediately, wherever we were.
+
+        trigger_wake() releases listen_for_wake_word the same way the
+        bridge's SIGUSR1 does. _ptt_interrupt lets a press double as
+        barge-in, so pressing the key while JARVIS is talking stops it and
+        starts listening — the same gesture for "go" and "stop".
+        """
+        self._ptt_interrupt = True
+        self.trigger_wake()
 
     def _audio_callback(self, indata, frames, time_info, status):
         self._last_frame_at = time.monotonic()
@@ -492,6 +509,15 @@ class VoiceLoop:
         print(f"  ambient RMS median {median:.0f} / p90 {p90:.0f} -> silence threshold set to {calibrated:.0f}")
         self.silence_rms_threshold = calibrated
         print('  barge-in: say "Hey Jarvis" to interrupt (wake-word gated, not volume)')
+        if self.push_to_talk is not None:
+            print(f"  push-to-talk: hold {self.push_to_talk.describe()} and speak "
+                  "(no wake word needed, works over music and noise)")
+            if not self.push_to_talk.saw_any_event:
+                # pynput's listener starts fine without permission and then
+                # never receives anything, so say it out loud rather than
+                # letting the key appear to do nothing.
+                print("     if nothing happens, grant Input Monitoring: System Settings >")
+                print("     Privacy & Security > Input Monitoring > enable your terminal")
 
     def listen_for_wake_word(self) -> None:
         self.wake_model.reset()
@@ -539,6 +565,14 @@ class VoiceLoop:
                 continue
             with self._barge_frames_lock:
                 self._barge_frames.append(frame)
+            if getattr(self, "_ptt_interrupt", False):
+                self._ptt_interrupt = False
+                print("(Push-to-talk pressed — stopping and listening.)")
+                if processing_active is not None and processing_active.is_set() and not playback_active.is_set():
+                    cli.claude_handoff.cancel_current()
+                    cli.shell.cancel_current()
+                stop_event.set()
+                return
             score = self.wake_model.predict(frame).get(self.wake_word, 0.0)
             processing = processing_active is not None and processing_active.is_set()
             if not playback_active.is_set() and not processing:
@@ -568,6 +602,35 @@ class VoiceLoop:
         # same path that made JARVIS's speech bleed into recordings.
         with self._barge_frames_lock:
             self._barge_frames.clear()
+
+    def record_while_held(self, max_seconds: float = MAX_UTTERANCE_SECONDS) -> tuple[np.ndarray, bool]:
+        """Record for exactly as long as the push-to-talk key is held.
+
+        No wake word, no VAD gate, no silence timeout, no bail — the key
+        being down IS the signal, so none of the probabilistic machinery
+        that has been dropping utterances can drop one here. Whisper still
+        decides whether there were words in it.
+        """
+        self._drain_queue()
+        frames: list[np.ndarray] = []
+        max_chunks = int(max_seconds * SAMPLE_RATE / FRAME_SAMPLES)
+        # A short floor so an accidental quick tap still yields something
+        # transcribable rather than a zero-length buffer.
+        min_chunks = max(1, int(0.5 * SAMPLE_RATE / FRAME_SAMPLES))
+        while len(frames) < max_chunks:
+            if not self.push_to_talk.held.is_set() and len(frames) >= min_chunks:
+                break
+            frames.append(self._next_frame())
+        # Tail past the release: people finish the last syllable as they
+        # let go, and clipping it turns "play Metallica" into "play Metall".
+        for _ in range(int(0.3 * SAMPLE_RATE / FRAME_SAMPLES)):
+            frames.append(self._next_frame())
+
+        recorded = np.concatenate(frames) if frames else np.array([], dtype=np.int16)
+        peak = self._rms(recorded) if recorded.size else 0.0
+        self._last_peak_rms = peak
+        print(f"  (debug: push-to-talk, {recorded.size / SAMPLE_RATE:.1f}s recorded, RMS {peak:.0f})")
+        return recorded, recorded.size > 0
 
     def record_utterance(
         self, max_seconds: float = MAX_UTTERANCE_SECONDS, bail_seconds: float | None = None
@@ -959,11 +1022,16 @@ class VoiceLoop:
         # speculative and should give up quickly. _force_wake_listen is set
         # when they called JARVIS by name mid-conversation, which is the
         # same explicit "I'm about to talk" signal as a fresh wake.
-        expecting_speech = not already_in_conversation or getattr(self, "_force_wake_listen", False)
-        self._force_wake_listen = False
-        audio, heard_speech = self.record_utterance(
-            bail_seconds=self.wake_listen_seconds if expecting_speech else None
-        )
+        if self.push_to_talk is not None and self.push_to_talk.held.is_set():
+            # Key is down: exact boundaries, none of the guessing below.
+            self._force_wake_listen = False
+            audio, heard_speech = self.record_while_held()
+        else:
+            expecting_speech = not already_in_conversation or getattr(self, "_force_wake_listen", False)
+            self._force_wake_listen = False
+            audio, heard_speech = self.record_utterance(
+                bail_seconds=self.wake_listen_seconds if expecting_speech else None
+            )
         utterance_done_at = time.perf_counter()
         # Skip Whisper when nothing was said. This return value used to be
         # discarded here (`audio, _ = ...`), so every no-speech phase still

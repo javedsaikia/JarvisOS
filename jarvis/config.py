@@ -32,6 +32,11 @@ DEFAULTS = {
     "voice_silence_seconds": 0.8,
     "voice_no_speech_bail_seconds": 3.0,
     "voice_wake_listen_seconds": 10.0,
+    # Push-to-talk (see jarvis/hotkey.py). Hold the combo and speak — no
+    # wake word, no VAD gate, no timeout, so it stays reliable over music
+    # and room noise where the hands-free path is probabilistic.
+    "push_to_talk_enabled": True,
+    "push_to_talk_combo": ["ctrl", "alt"],
     "voice_silence_rms_threshold": 300,
     # Was 180 — seen live, a window that long meant any speech near the
     # mic (e.g. dictating a message to something else entirely) got picked
