@@ -40,7 +40,7 @@ DEFAULTS = {
     "voice_silence_rms_threshold": 300,
     # Was 180 — seen live, a window that long meant any speech near the
     # mic (e.g. dictating a message to something else entirely) got picked
-    # up as a JARVIS follow-up command for minutes after the last real
+    # up as a Orin follow-up command for minutes after the last real
     # exchange, with no wake word required to re-arm it.
     "voice_conversation_window_seconds": 25,
     # Master switch for everything that looks at the screen — "what's on
@@ -62,9 +62,9 @@ DEFAULTS = {
     # runs on every "what's on my screen", including spoken ones.
     "screen_text_model": "qwen2.5:1.5b",
     "screen_max_tokens": 220,
-    # Window title marked as JARVIS's own and left out of the capture, so
-    # the HUD is never what JARVIS describes.
-    "screen_hud_window_marker": "J.A.R.V.I.S.",
+    # Window title marked as Orin's own and left out of the capture, so
+    # the HUD is never what Orin describes.
+    "screen_hud_window_marker": "Orin HUD",
     # Only used when native window-excluding capture is unavailable: ask
     # the web UI to blank itself, wait, then screenshot everything.
     "screen_hide_ui": True,

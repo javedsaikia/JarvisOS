@@ -1,9 +1,9 @@
-"""File access for JARVIS. Write stays scoped to the JarvisOS project
+"""File access for Orin. Write stays scoped to the Orin project
 directory only (path traversal outside it is rejected) — this is the
 'file read/write in project' tool from the mission spec. Read and search
 are scoped wider, to the project plus the user's common personal folders
 (Desktop, Documents, Downloads) — an explicit, deliberate choice (not the
-whole home directory) so JARVIS can actually answer questions about real
+whole home directory) so Orin can actually answer questions about real
 personal files without reaching into ~/.ssh, ~/Library (app data, browser
 profiles, anything keychain-adjacent), or other apps' private storage.
 """
@@ -65,7 +65,7 @@ def _resolve_read(path: str) -> Path:
         except ValueError:
             continue
     raise FileToolError(
-        f"'{path}' is outside the folders JARVIS can read "
+        f"'{path}' is outside the folders Orin can read "
         "(the project, Desktop, Documents, Downloads) — refusing."
     )
 

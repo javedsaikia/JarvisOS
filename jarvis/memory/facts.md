@@ -1,4 +1,4 @@
-# JARVIS Memory
+# Orin Memory
 
 ## Facts & Preferences
 - I prefer terse answers

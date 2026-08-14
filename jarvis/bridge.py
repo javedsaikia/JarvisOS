@@ -1,4 +1,4 @@
-"""WebSocket bridge for the JARVIS web UI.
+"""WebSocket bridge for the Orin web UI.
 
 Pure presentation-layer glue: imports and calls the SAME functions the CLI
 uses (process_turn, label, load_config, MemoryStore). Zero routing, cost,
@@ -478,7 +478,7 @@ async def _voice_events_poll_loop() -> None:
 
     Polled faster than the transcript loop because this one is used for
     animation: the envelope carries its own timeline, but its arrival is
-    what marks "JARVIS started talking now".
+    what marks "Orin started talking now".
     """
     loop = asyncio.get_running_loop()
     # Start from the end of the file: events from before this bridge
@@ -523,7 +523,7 @@ def _capture_feed_frame() -> bytes:
     an infinite hall of mirrors, and useless as a view of the desktop.
     """
     with _cfg_lock:
-        marker = cfg.get("screen_hud_window_marker", "J.A.R.V.I.S.")
+        marker = cfg.get("screen_hud_window_marker", "Orin HUD")
     jpeg, _meta = screen_capture.capture(hud_marker=marker, max_width=640)
     return jpeg
 
@@ -700,7 +700,7 @@ async def handle_connection(ws) -> None:
 
 
 async def main() -> None:
-    print(f"JARVIS bridge listening on ws://{HOST}:{PORT}")
+    print(f"Orin bridge listening on ws://{HOST}:{PORT}")
     # Reference kept deliberately — asyncio only holds a weak reference to
     # tasks, so an unreferenced create_task() result is eligible for
     # garbage collection mid-run, silently killing the poll loop.

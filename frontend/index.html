@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>J.A.R.V.I.S.</title>
+    <title>Orin HUD</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -45,7 +45,7 @@
       </svg>
 
       <div id="core-label" aria-hidden="true">
-        <span class="core-name">JARVIS</span>
+        <span class="core-name">ORIN</span>
         <span id="core-state" class="core-sub">CORE ONLINE</span>
       </div>
 
@@ -60,14 +60,14 @@
 
       <header id="hud-header">
         <div class="eyebrow">Your world. Your voice. One intelligence.</div>
-        <h1 class="wordmark">JARVIS</h1>
+        <h1 class="wordmark">ORIN</h1>
         <div class="subtitle">Your Personal AI Assistant</div>
       </header>
 
       <!-- LEFT: the command rail. Every control is a real action wired to
            the bridge; nothing here is a mock. -->
       <aside id="left-rail">
-        <nav id="command-rail" aria-label="JARVIS controls">
+        <nav id="command-rail" aria-label="Orin controls">
           <button id="voice-btn" class="cmd cmd-primary" type="button"
                   title="Start or stop the always-on voice loop">
             <svg class="cmd-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -102,7 +102,7 @@
             </button>
 
             <button id="stop-btn" class="cmd" type="button"
-                    title="Stop JARVIS talking, right now">
+                    title="Stop Orin talking, right now">
               <svg class="cmd-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <rect x="6" y="6" width="12" height="12" rx="1.5"/>
               </svg>
@@ -205,7 +205,7 @@
       <!-- Routing tiers — lights up to show which backend actually
            answered. data-label matches cli.label() exactly. -->
       <nav id="tier-strip" aria-hidden="true">
-        <div class="tier" data-label="[JARVIS]">
+        <div class="tier" data-label="[Orin]">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="9"/></svg>
           <span>Core</span>
         </div>

@@ -1,5 +1,5 @@
 """Always-on voice loop: continuous mic capture -> wake word ("Hey Jarvis")
--> record utterance -> local transcription -> normal JARVIS pipeline -> TTS.
+-> record utterance -> local transcription -> normal Orin pipeline -> TTS.
 
 Everything here is local: openWakeWord for the wake word, faster-whisper for
 transcription of the triggered utterance. Wispr Flow isn't used in this
@@ -73,8 +73,8 @@ CONFIRM_MAX_SECONDS = 6
 # FULL max_seconds. Measured live over 416 turns: 293 of them (70%) ended
 # in "didn't catch anything", each burning 15s of recording plus 10-29s of
 # Whisper chewing through 15s of pure silence — a 25-44 second window where
-# JARVIS looks completely dead before it says anything at all. That is the
-# "JARVIS is sleeping / sometimes it just doesn't respond" symptom, and it
+# Orin looks completely dead before it says anything at all. That is the
+# "Orin is sleeping / sometimes it just doesn't respond" symptom, and it
 # is a bug, not a tuning problem. Real assistants give you a few seconds to
 # start talking and then quietly stand down.
 NO_SPEECH_BAIL_SECONDS = 3.0
@@ -82,7 +82,7 @@ NO_SPEECH_BAIL_SECONDS = 3.0
 # nobody is there). Straight after a wake word the user has explicitly said
 # they want to talk, so cutting them off at 3s is wrong — that is what
 # "I say Hey Jarvis and it doesn't respond" actually was: the wake word
-# fired, the user paused to gather the sentence, and JARVIS had already
+# fired, the user paused to gather the sentence, and Orin had already
 # stopped listening with no cue that it ever started. Field-tested
 # Whisper-assistant configs sit around 12s before returning to idle.
 WAKE_LISTEN_SECONDS = 10.0
@@ -120,7 +120,7 @@ def _normalize_for_compare(text: str) -> str:
 
 # Exact normalized forms only (not a fuzzy/substring check) — deliberately
 # narrow, so a genuine follow-up that happens to start with the name (e.g.
-# "Jarvis, can you check my email") is never swallowed by this, only a
+# "Orin, can you check my email") is never swallowed by this, only a
 # bare repeat of the wake phrase itself. Covers the STT variants actually
 # seen live for "Hey Jarvis" (accent-stripped, fused words, "Jervis").
 _BARE_WAKE_PHRASES = {
@@ -172,7 +172,7 @@ _ACK_TONE_PATH: str | None = None
 def _ack_tone_path() -> str:
     """Path to a short rising two-note chime, rendered once on first use.
 
-    JARVIS had no way of telling the user it had started listening, so
+    Orin had no way of telling the user it had started listening, so
     after saying "Hey Jarvis" you were talking into a system whose state
     you couldn't see — and if you paused first, it had already given up.
     Siri, Alexa and Google all play a tone here for exactly this reason.
@@ -277,17 +277,17 @@ _FUZZY_ECHO_MIN_WORDS = 5
 
 
 def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
-    """True if new_text is plausibly JARVIS's own just-spoken reply bleeding
+    """True if new_text is plausibly Orin's own just-spoken reply bleeding
     back through the mic, not a new thing the user said.
 
     Seen live: no acoustic echo cancellation means the mic can pick up
-    JARVIS's own speaker output. That gets transcribed as if it were a
+    Orin's own speaker output. That gets transcribed as if it were a
     fresh utterance, gets sent back through the LLM, gets a reply, and the
     reply itself bleeds through again — a self-sustaining conversation loop
     with nobody talking, each reply drifting further from anything the user
     actually said (this is what "the flow isn't maintained, it's writing
     gibberish" looks like from the outside — it's not incoherent generation,
-    it's JARVIS answering a mangled transcript of itself).
+    it's Orin answering a mangled transcript of itself).
 
     An exact contiguous-word-run match was the first attempt, but STT on
     bleed-through audio (picked up off-axis, at speaker distance, often
@@ -301,7 +301,7 @@ def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
     conversations derailing into self-talk, that trade-off is worth it.
 
     No longer capped to short utterances — that cap was the bigger bug.
-    Seen live: JARVIS's own longer replies (especially tool results like a
+    Seen live: Orin's own longer replies (especially tool results like a
     multi-sentence email summary) bleed through just as often as short
     ones, and a MISSED long echo does far more damage than a missed short
     one. It gets processed as a genuine new request (sometimes
@@ -328,7 +328,7 @@ def _looks_like_self_echo(new_text: str, last_reply: str) -> bool:
         return False
     n = len(new_words)
     # Nothing this short is ever treated as an echo. Natural conversation
-    # answers a question using the question's own words — JARVIS asked
+    # answers a question using the question's own words — Orin asked
     # "...or exploring some music recommendations?", the user said
     # "recommendations", and it was discarded as an echo of the very reply
     # it was answering. Same for "yes", "stop", "30", "command". A one- or
@@ -439,7 +439,7 @@ class VoiceLoop:
 
         trigger_wake() releases listen_for_wake_word the same way the
         bridge's SIGUSR1 does. _ptt_interrupt lets a press double as
-        barge-in, so pressing the key while JARVIS is talking stops it and
+        barge-in, so pressing the key while Orin is talking stops it and
         starts listening — the same gesture for "go" and "stop".
         """
         self._ptt_interrupt = True
@@ -522,6 +522,12 @@ class VoiceLoop:
         print(f"  ambient RMS median {median:.0f} / p90 {p90:.0f} -> silence threshold set to {calibrated:.0f}")
         self.silence_rms_threshold = calibrated
         print('  barge-in: say "Hey Jarvis" to interrupt (wake-word gated, not volume)')
+        # The product is Orin; the spoken phrase is still "Hey Jarvis"
+        # because voice_wake_word points at openWakeWord's pretrained
+        # hey_jarvis model, and there is no pretrained "hey orin". Saying
+        # the new name here would be a lie the user would discover by
+        # standing in front of a microphone repeating it.
+        print('  (the wake phrase is still "Hey Jarvis" — see README, "Wake phrase")')
         if self.push_to_talk is not None:
             print(f"  push-to-talk: hold {self.push_to_talk.describe()} and speak "
                   "(no wake word needed, works over music and noise)")
@@ -555,15 +561,15 @@ class VoiceLoop:
         """Interrupt on the WAKE WORD, not on loudness.
 
         This machine has no acoustic echo cancellation, so the mic hears
-        JARVIS's own speakers. An energy threshold cannot tell that apart
+        Orin's own speakers. An energy threshold cannot tell that apart
         from the user interrupting, and measured over 416 real turns it
-        fired 179 times (43%) — JARVIS cutting its own replies into
+        fired 179 times (43%) — Orin cutting its own replies into
         fragments, which is what "it says three or four lines and then
         drops" actually was. Chasing it with a higher threshold and a
         fuzzy transcript filter also ate 36 genuine user commands.
 
         openWakeWord makes the problem structurally impossible instead:
-        JARVIS's own speech never contains "Hey Jarvis", so it cannot
+        Orin's own speech never contains "Hey Jarvis", so it cannot
         trigger this, at any volume. Same contract Alexa uses — say the
         wake word to interrupt.
         """
@@ -612,7 +618,7 @@ class VoiceLoop:
             return  # a missing chime must never take down a turn
         # The tone is our own output, so make sure it can't survive in the
         # pre-roll deque and get prepended to the user's utterance — the
-        # same path that made JARVIS's speech bleed into recordings.
+        # same path that made Orin's speech bleed into recordings.
         with self._barge_frames_lock:
             self._barge_frames.clear()
 
@@ -649,11 +655,11 @@ class VoiceLoop:
         self, max_seconds: float = MAX_UTTERANCE_SECONDS, bail_seconds: float | None = None
     ) -> tuple[np.ndarray, bool]:
         # Drain first: the InputStream callback queues frames continuously,
-        # including the entire time JARVIS was mid-reply (LLM latency +
+        # including the entire time Orin was mid-reply (LLM latency +
         # TTS playback, seen live running 20-40+ seconds). Nothing here
         # used to discard that backlog before listening again, so a fresh
         # "recording" could start by consuming hundreds of queued frames
-        # of JARVIS's OWN just-finished speech before ever reaching
+        # of Orin's OWN just-finished speech before ever reaching
         # genuinely current audio — the actual mechanism behind most of
         # what looked like random mis-hearing, confirm prompts hearing an
         # unrelated older reply instead of yes/no, and the self-echo text
@@ -738,7 +744,7 @@ class VoiceLoop:
         The whole reply used to go to Sarvam in one call, so nothing was
         audible until the entire thing had been synthesized — measured live
         across 40 turns at a ~7s median and a 21.7s worst case of dead
-        silence before JARVIS said a single word. Synthesis of chunk N+1
+        silence before Orin said a single word. Synthesis of chunk N+1
         overlaps playback of chunk N, so the only thing standing between
         the user and the first word is one short sentence.
         """
@@ -787,16 +793,16 @@ class VoiceLoop:
         finally:
             # THE source of self-echo, and it was never a text problem.
             # _watch_for_barge_in appends every frame it sees into
-            # _barge_frames, including all the frames that are JARVIS's own
+            # _barge_frames, including all the frames that are Orin's own
             # voice coming back through the mic during playback. That deque
             # is then used verbatim as the opening ~1s of the NEXT
             # recording (see record_utterance) — _drain_queue() empties
-            # audio_q but has never touched this. So the tail of JARVIS's
+            # audio_q but has never touched this. So the tail of Orin's
             # own sentence was being prepended to whatever the user said
             # next, which is what the transcript-similarity heuristics have
             # been trying and failing to clean up after ever since.
             # Dropping it here means the pre-roll only ever holds audio
-            # captured after JARVIS stopped talking, while still doing its
+            # captured after Orin stopped talking, while still doing its
             # real job of catching a user who starts speaking early.
             with self._barge_frames_lock:
                 self._barge_frames.clear()
@@ -884,9 +890,9 @@ class VoiceLoop:
                     self.calibrate()
                     if first_start:
                         first_start = False
-                        print(f'JARVIS voice loop online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
+                        print(f'Orin voice loop online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
                     else:
-                        print(f'JARVIS back online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
+                        print(f'Orin back online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
                     self._conversation_loop(mem)
             except _StreamDead:
                 print(
@@ -985,7 +991,7 @@ class VoiceLoop:
             except Exception as e:
                 # Seen live: the whole process died silently mid-turn with
                 # no traceback anywhere (not even a Python exception in the
-                # log), leaving the user with a JARVIS that looked "on" but
+                # log), leaving the user with a Orin that looked "on" but
                 # never responded again. Whatever the cause, one bad turn
                 # should not be able to take down the entire voice loop —
                 # log it loudly and keep listening instead.
@@ -1039,7 +1045,7 @@ class VoiceLoop:
         # Straight after a wake word the user has said they intend to
         # speak, so wait properly for them; a follow-up listen is
         # speculative and should give up quickly. _force_wake_listen is set
-        # when they called JARVIS by name mid-conversation, which is the
+        # when they called Orin by name mid-conversation, which is the
         # same explicit "I'm about to talk" signal as a fresh wake.
         if self.push_to_talk is not None and self.push_to_talk.held.is_set():
             # Key is down: exact boundaries, none of the guessing below.
@@ -1091,9 +1097,9 @@ class VoiceLoop:
         if already_in_conversation and _is_bare_wake_phrase(text):
             # Answer it. This branch used to return in total silence: no
             # chime (that only fires on a fresh wake) and no spoken reply,
-            # so calling JARVIS by name during an open window produced
+            # so calling Orin by name during an open window produced
             # nothing observable whatsoever. Seen live, the user said "Hey
-            # Jarvis" four times in a row and got silence every time, which
+            # Orin" four times in a row and got silence every time, which
             # is indistinguishable from the whole thing being broken — the
             # exact "I say Hey Jarvis and nothing happens" complaint. The
             # chime says "I'm here, go ahead", and the flag below gives
@@ -1116,7 +1122,7 @@ class VoiceLoop:
         if INTERRUPT_RE.search(normalized):
             # "Stop" used to be lumped in with the shutdown phrases
             # above, which meant saying it killed the whole voice
-            # loop process — you'd have to restart JARVIS just to
+            # loop process — you'd have to restart Orin just to
             # get it to stop talking. This just cancels the current
             # turn and goes back to listening.
             print("(Stopping — still listening, just not talking.)\n")
@@ -1142,7 +1148,7 @@ class VoiceLoop:
         processing_active = self._processing_active
         barge_monitor = None
         # No headphones/speakers distinction any more: _watch_for_barge_in
-        # triggers on the wake word rather than on loudness, and JARVIS's
+        # triggers on the wake word rather than on loudness, and Orin's
         # own voice can never contain the wake word, so echo through open
         # speakers is harmless by construction.
         if self.cfg.get("tts_enabled"):

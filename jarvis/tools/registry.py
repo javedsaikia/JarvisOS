@@ -34,7 +34,7 @@ FILE_TOOL_SCHEMAS = [
         "function": {
             "name": "read_file",
             "description": (
-                "Read a text file's contents. Allowed anywhere under the JarvisOS project, "
+                "Read a text file's contents. Allowed anywhere under the Orin project, "
                 "Desktop, Documents, or Downloads — anywhere else is refused."
             ),
             "parameters": {
@@ -48,7 +48,7 @@ FILE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Write (or overwrite) a text file within the JarvisOS project directory only.",
+            "description": "Write (or overwrite) a text file within the Orin project directory only.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -64,7 +64,7 @@ FILE_TOOL_SCHEMAS = [
         "function": {
             "name": "list_dir",
             "description": (
-                "List files in a directory. Allowed anywhere under the JarvisOS project, "
+                "List files in a directory. Allowed anywhere under the Orin project, "
                 "Desktop, Documents, or Downloads — anywhere else is refused."
             ),
             "parameters": {
@@ -80,7 +80,7 @@ FILE_TOOL_SCHEMAS = [
             "name": "search_files",
             "description": (
                 "Search by filename or content across the Desktop, Documents, Downloads, and "
-                "the JarvisOS project directory. Use this to find a file before reading it "
+                "the Orin project directory. Use this to find a file before reading it "
                 "when the exact path isn't already known."
             ),
             "parameters": {
@@ -94,7 +94,7 @@ FILE_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_shell",
-            "description": "Run a shell command in the JarvisOS project directory.",
+            "description": "Run a shell command in the Orin project directory.",
             "parameters": {
                 "type": "object",
                 "properties": {"command": {"type": "string", "description": "The shell command to run"}},

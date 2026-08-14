@@ -6,7 +6,7 @@ import { HudRing } from "./hud-ring";
 import { Visualizers } from "./visualizers";
 import { VoiceRing } from "./voice-ring";
 import { EnvelopePlayer } from "./envelope-player";
-import { JarvisSocket, type ServerMessage } from "./socket";
+import { OrinSocket, type ServerMessage } from "./socket";
 import { SpotifyWidget } from "./spotify-widget";
 
 // Overridable with ?bridge=ws://host:port — the bridge is normally on this
@@ -65,7 +65,7 @@ const envelopePlayer = new EnvelopePlayer(
 
 let connected = false;
 let voiceRunning = false;
-const socket = new JarvisSocket(BRIDGE_URL, (isConnected) => {
+const socket = new OrinSocket(BRIDGE_URL, (isConnected) => {
   connected = isConnected;
   ui.setConnectionState(isConnected);
   ui.setLink(BRIDGE_URL, isConnected);

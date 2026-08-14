@@ -172,7 +172,7 @@ _was_playing_before_conversation = False
 
 def pause_for_conversation() -> None:
     """Called right before the mic starts recording a turn — so background
-    music doesn't bleed into the recording or talk over JARVIS's reply.
+    music doesn't bleed into the recording or talk over Orin's reply.
     Deliberately checks _is_running() first (same reasoning as
     now_playing_state()): most turns have nothing to do with Spotify at
     all, and the run() helper's app_name would otherwise auto-launch
@@ -245,11 +245,11 @@ _DEFAULT_MAX_AUTO_VOLUME = 75
 
 
 def _apply_volume_cap() -> None:
-    """Caps the volume when JARVIS itself starts or resumes playback — seen
+    """Caps the volume when Orin itself starts or resumes playback — seen
     live: at volume 100, "Hey Jarvis" stopped registering at all (the mic
     has no echo/noise cancellation, so loud music at full volume drowns out
     the wake word before it ever reaches the pipeline). Only applies when
-    JARVIS starts playback; explicit volume_up/volume_down/mute commands
+    Orin starts playback; explicit volume_up/volume_down/mute commands
     are the user's own deliberate choice and stay untouched.
     """
     cap = load_config().get("spotify_max_volume", _DEFAULT_MAX_AUTO_VOLUME)

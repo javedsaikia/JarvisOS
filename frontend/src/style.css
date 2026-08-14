@@ -1,4 +1,4 @@
-/* J.A.R.V.I.S. HUD — electric-blue holographic interface.
+/* Orin HUD — electric-blue holographic interface.
    Palette and density follow the reference poster: cool blue on near-black,
    layered reticle around a glowing core, dense telemetry cards, icon tier
    row. Every value shown is real (analyser audio, backend labels, session
@@ -489,7 +489,7 @@ body {
 
 /* ── Now Playing (Spotify) ──────────────────────────────────────────────
    Reuses the same card/meter language as the rest of the HUD rather than
-   Spotify's own green branding — this is JARVIS reporting real playback
+   Spotify's own green branding — this is Orin reporting real playback
    state, not an embedded Spotify widget. */
 .spotify-now-playing {
   display: flex;
@@ -1077,7 +1077,7 @@ body {
 
 /* ── Status theming ──────────────────────────────────────────────────────
    ui.setStatus() stamps the current state on <html>, so the whole HUD can
-   answer "what is JARVIS doing right now" at a glance from across the
+   answer "what is Orin doing right now" at a glance from across the
    room — the core caption, the level arc and the corner brackets all
    shift together instead of only the small status dot changing. */
 

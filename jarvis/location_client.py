@@ -39,7 +39,7 @@ OVERPASS_URLS = [
     "https://overpass.openstreetmap.ru/api/interpreter",
 ]
 IP_GEOLOCATION_URL = "https://ipwho.is/"
-_USER_AGENT = "JarvisOS/1.0 (local personal assistant)"
+_USER_AGENT = "Orin/1.0 (local personal assistant)"
 
 # Small fixed vocabulary — matches how router.py detects domains via
 # keyword patterns, not free-form extraction. "or similar" categories can

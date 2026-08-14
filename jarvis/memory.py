@@ -12,7 +12,7 @@ class MemoryStore:
     def __init__(self):
         MEMORY_DIR.mkdir(exist_ok=True)
         if not FACTS_PATH.exists():
-            FACTS_PATH.write_text("# JARVIS Memory\n\n## Facts & Preferences\n")
+            FACTS_PATH.write_text("# Orin Memory\n\n## Facts & Preferences\n")
 
     def load_facts(self) -> str:
         return FACTS_PATH.read_text().strip()

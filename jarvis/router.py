@@ -67,14 +67,14 @@ NOTES_READ_PATTERNS = [
 ]
 
 # Escalates to Claude Code (see cli.handle_email), which already has a
-# real, first-party Gmail connection — JARVIS's own backend isn't an MCP
+# real, first-party Gmail connection — Orin's own backend isn't an MCP
 # host and has no mailbox access of its own. Deliberately read-only for
 # now, same scoping as calendar/notes reads; "send an email" is not
 # handled here and would need its own write-confirm path if ever added.
 # One vocabulary for "the mailbox", reused by every pattern below. "gmail"
 # was missing from all of them, so the most natural way to ask — "check my
 # Gmail" — matched nothing, fell through to the plain LLM, and got answered
-# with "I can't access your email", which is what "JARVIS can't check my
+# with "I can't access your email", which is what "Orin can't check my
 # inbox" actually was. The Gmail connection itself was working the whole
 # time (verified end to end against the real mailbox).
 _MAILBOX = r"(?:e-?mails?|inbox|mail|gmail|g-mail)"

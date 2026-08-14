@@ -1,4 +1,4 @@
-# JARVIS
+# Orin
 
 A cost-optimized personal AI assistant for macOS. Everything defaults to a
 local model (Ollama) and stays local — memory, routing, Calendar/Notes,
@@ -15,7 +15,7 @@ pipeline):
 # Text loop — type, or dictate with Wispr Flow into the terminal prompt
 python3 -m jarvis.cli
 
-# Always-on voice loop — say "Hey Jarvis", no typing at all
+# Always-on voice loop — say "Hey Jarvis" (see "Wake phrase" below), no typing at all
 jarvis/.venv/bin/python3 -m jarvis.voice_loop
 
 # Web UI — audio-reactive orb + transcript, needs the bridge + dev server (two terminals):
@@ -36,7 +36,7 @@ the next if it doesn't match:
 3. **Claude Code** — only for requests that are clearly multi-file
    coding/agentic work, and only after you confirm the handoff
 
-Every reply is labeled with what answered it: `[JARVIS]` (the local model),
+Every reply is labeled with what answered it: `[Orin]` (the local model),
 `[Calendar]`, `[Notes]`, `[Files]`, `[Shell]`, or `[Claude Code]`. The local
 model is labeled by what it is to you rather than by the runtime serving it —
 naming Ollama in the transcript read like a second assistant had replied.
@@ -51,10 +51,10 @@ naming Ollama in the transcript read like a second assistant had replied.
 | `jarvis/ollama_client.py` | stdlib-only client for local Ollama |
 | `jarvis/claude_handoff.py` | Shells out to the `claude` CLI |
 | `jarvis/memory.py` | Facts + conversation log persistence |
-| `jarvis/persona.py` | JARVIS system prompt — personality, addresses you by name |
+| `jarvis/persona.py` | Orin system prompt — personality, addresses you by name |
 | `jarvis/tts.py` | Piper text-to-speech (synthesize/play split for the web UI — see [Web UI](#web-ui)) |
 | `jarvis/tools/` | Calendar, Notes, files, shell, and the file/shell tool-call registry |
-| `jarvis/screen_capture.py` | Native screen capture (excludes the JARVIS window) + on-device OCR |
+| `jarvis/screen_capture.py` | Native screen capture (excludes the Orin window) + on-device OCR |
 | `jarvis/bridge.py` | WebSocket bridge for the web UI — presentation-layer glue only, zero routing/cost logic of its own |
 | `jarvis/.venv/` | Isolated Python env for Piper/openWakeWord/faster-whisper/websockets (never touches system Python) |
 | `jarvis/config.json` | All settings — see [Config](#config) |
@@ -83,7 +83,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 
 `jarvis/config.json` (created on first run, editable):
 
-- `user_name` — how JARVIS addresses you
+- `user_name` — how Orin addresses you
 - `default_backend` — `"ollama"` (keep this — never set to a paid backend as default)
 - `ollama_model` / `ollama_host` — local model to use
 - `claude_code_enabled` — set `false` to fully disable the escalation path
@@ -93,7 +93,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `tts_enabled` — speak every reply out loud via Piper (default `true`)
 - `tts_backend` — `"piper"` (the only backend implemented)
 - `tts_voice_model` — path to the Piper `.onnx` voice model, relative to the project root
-- `voice_wake_word` — openWakeWord pretrained model for the always-on voice loop (default `"hey_jarvis"`)
+- `voice_wake_word` — openWakeWord pretrained model for the always-on voice loop (default `"hey_jarvis"` — the spoken phrase, see [Wake phrase](#wake-phrase))
 - `voice_stt_model` — faster-whisper model size for transcribing voice commands (default `"small.en"`)
 - `voice_context_turns` — how many recent turns the voice loop includes in the prompt; lower is faster
 - `voice_ollama_model` — optional smaller model for spoken turns only; defaults to the main `ollama_model`
@@ -104,7 +104,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `vision_ollama_model` — local Ollama vision model, used only for screens with almost no text (default `"moondream"`, `ollama pull moondream` first)
 - `screen_ocr_enabled` — read the screen with macOS on-device OCR (default `true`; the primary path — see [Screen understanding](#screen-understanding-read-only-never-confirmed))
 - `screen_text_model` — local model that answers *specific* questions about screen text (default `"qwen2.5:1.5b"`; a bigger model is more accurate and slower)
-- `screen_hud_window_marker` — window title treated as JARVIS's own and left out of the capture (default `"J.A.R.V.I.S."`)
+- `screen_hud_window_marker` — window title treated as Orin's own and left out of the capture (default `"Orin HUD"`, matching the web UI's `<title>`; it is deliberately two words, since a bare "Orin" is a substring of ordinary window titles like "Monitoring")
 - `screen_hide_ui` / `screen_hide_delay_ms` — blank the web UI before a fallback screenshot, and how long to wait first (only used when native capture is unavailable)
 - `screen_cloud_fallback` / `screen_cloud_model` — paid cloud vision fallback, off by default; needs `GEMINI_API_KEY` in `jarvis/.env` and still asks before sending anything
 - `screen_feed_enabled` — the web UI's live Screen Feed card, which screenshots this Mac every 2s while a tab is open; set `false` to disable it regardless of the UI's own toggle (default `true`)
@@ -116,7 +116,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 ## Personality
 
 `jarvis/persona.py` builds the system prompt: calm, competent, slightly
-formal British-butler tone with dry wit — classic JARVIS. Addresses you by
+formal British-butler tone with dry wit — classic Orin. Addresses you by
 `user_name` from config (not every line — just occasionally). Concise by
 default, more detail on request. This prompt is only used on the Ollama
 path (`handle_ollama` in `cli.py`) — Calendar/Notes/Files tool replies are
@@ -258,7 +258,7 @@ works, via `screencapture` and the vision model, just less well.
 Screenshots require macOS's "Screen Recording" permission — grant it once
 to whatever app hosts this process (Terminal, etc.) in
 System Settings > Privacy & Security > Screen Recording, then restart the
-voice loop/bridge. JARVIS detects a missing grant *before* capturing (other
+voice loop/bridge. Orin detects a missing grant *before* capturing (other
 apps' window titles are privileged the same way pixels are) and says
 exactly what to do, rather than silently describing a blank desktop.
 
@@ -270,13 +270,13 @@ exactly what to do, rather than silently describing a blank desktop.
 LLM-mediated. Same tier as calendar/notes/email reads: automatic, local,
 free, no confirmation.
 
-**The capture is native, and JARVIS is not in it.** The HUD is a web page,
+**The capture is native, and Orin is not in it.** The HUD is a web page,
 so nothing it can capture is more than its own tab — capture therefore
 happens in Python, through macOS's window server
 (`jarvis/screen_capture.py`). More importantly, with the HUD open the
 honest answer to "what's on my screen" was "a glowing blue orb". Rather
 than minimising the window and hoping, the screen is composited from the
-window list **with the JARVIS window left out**
+window list **with the Orin window left out**
 (`CGWindowListCreateImageFromArray`): everything else is captured exactly
 as it is, including other windows of the same browser, with no hiding, no
 delay and no flicker. Runs in ~0.1s.
@@ -299,13 +299,13 @@ desktop's worth of OCR and asked to summarize, the small local models
 invented every time — a URL that wasn't on screen, an integration that
 doesn't exist. The window server already knows exactly which app is in
 front and what else is open, and the OCR already knows which line is drawn
-largest, so JARVIS states those instead: *"You're in Visual Studio Code, on
+largest, so Orin states those instead: *"You're in Visual Studio Code, on
 'JarvisOS'. Safari, Terminal and Notes are also open. The largest text on
 screen reads ..."*. Always true, and faster than a model call.
 
 **Permissions.** This needs **Screen Recording**, granted to whatever app
-starts JARVIS (your Terminal, if you use `./start_jarvis.sh`) in System
-Settings > Privacy & Security > Screen Recording. Without it JARVIS says
+starts Orin (your Terminal, if you use `./start_orin.sh`) in System
+Settings > Privacy & Security > Screen Recording. Without it Orin says
 so in plain language instead of describing a blank desktop — window titles
 are privileged the same way pixels are, so a missing grant is detected
 before anything is captured (`screen_capture.has_permission()`).
@@ -315,7 +315,7 @@ at the screen. Finer control: `screen_ocr_enabled` (OCR path),
 `screen_feed_enabled` (the live card in the UI), `screen_cloud_fallback`
 (paid cloud vision, off by default and confirmed even when on).
 
-**Hide/restore.** If the native path is unavailable (no pyobjc), JARVIS
+**Hide/restore.** If the native path is unavailable (no pyobjc), Orin
 falls back to `screencapture`, which photographs everything including the
 HUD. In that case only, it publishes a `screen_capture` phase event; the
 bridge relays it and the web UI blanks itself for the shot, then comes
@@ -341,7 +341,7 @@ the primary path.
 LLM-mediated (same pattern as the file tools above) — click targets,
 typed text, and URLs are too free-form for regex extraction. Ollama picks
 one of five tools from `jarvis/tools/browser.py`, run against **one
-persistent, JARVIS-controlled Chromium instance** (`jarvis/browser_profile/`,
+persistent, Orin-controlled Chromium instance** (`jarvis/browser_profile/`,
 gitignored — never your actual daily browser), launched lazily on first
 use so logins/cookies persist across turns instead of a fresh incognito
 window spawning every command.
@@ -421,7 +421,7 @@ calendar/notes/email reads: automatic, no confirmation.
 
   Then enable it under **System Settings → Privacy & Security → Location
   Services** (both the global toggle and the CoreLocationCLI entry).
-  Until that is granted the binary just errors and JARVIS stays on IP.
+  Until that is granted the binary just errors and Orin stays on IP.
   When it does fall back, spoken answers say "near \<city\>, going by your
   network location" rather than stating the place as fact.
 - **Weather**: [Open-Meteo](https://open-meteo.com/) — free, no API key.
@@ -477,7 +477,7 @@ Setup (already done in this repo, for reference / reinstalling elsewhere):
 ```bash
 python3 -m venv jarvis/.venv
 jarvis/.venv/bin/pip install piper-tts
-# voice model (British male, fits the JARVIS persona):
+# voice model (British male, fits the Orin persona):
 mkdir -p jarvis/voices
 curl -sL -o jarvis/voices/en_GB-alan-medium.onnx \
   "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
@@ -502,7 +502,29 @@ jarvis/.venv/bin/python3 -m jarvis.voice_loop
 
 Continuous mic capture — no terminal typing, no per-turn dictation. Say
 "Hey Jarvis", then your request; it transcribes, routes, and speaks the
-reply, then goes back to listening. This is a genuinely different pipeline
+reply, then goes back to listening.
+
+### Wake phrase
+
+**The assistant is called Orin. The wake phrase is still "Hey Jarvis."**
+
+That is not an oversight. `voice_wake_word` names a *pretrained*
+openWakeWord model, and the pretrained set is fixed — `hey_jarvis`,
+`alexa`, `hey_mycroft`, `hey_rhasspy`. There is no "hey orin", so setting
+one would mean the loop listens for a model that does not exist and never
+wakes. Printing "say Hey Orin" in the startup banner would be a lie you
+would only discover by standing in front of a microphone repeating it, so
+the banner says the phrase that actually works and points here.
+
+Two ways out, whenever you want one:
+
+- **Push-to-talk** already avoids the question entirely — hold
+  Control+Option and speak, no phrase at all. It is also the more reliable
+  path over music and room noise (`jarvis/hotkey.py`; needs Input
+  Monitoring permission, and `./check_hotkey.sh` verifies it).
+- **Train a custom "Hey Orin" model.** openWakeWord supports custom
+  wake words; drop the resulting model where the loop can load it and set
+  `voice_wake_word` to its name. Nothing else in the code changes. This is a genuinely different pipeline
 from the text loop's Wispr integration, because Wispr Flow doesn't do
 ambient background listening — it's a dictation tool bound to a focused
 text field. So this mode uses its own fully local stack instead:
@@ -527,7 +549,7 @@ text field. So this mode uses its own fully local stack instead:
 
 Confirmations (Claude Code handoff, calendar/note writes, shell commands)
 work the same way here as in the text loop, just spoken instead of typed:
-JARVIS speaks the question aloud, then listens for a short yes/no reply.
+Orin speaks the question aloud, then listens for a short yes/no reply.
 `jarvis/cli.py`'s `process_turn`/`handle_tool`/etc. all take a swappable
 `confirm_fn` for exactly this — `text_confirm` (types) for the terminal
 loop, `VoiceLoop.voice_confirm` (speaks + listens) here. Same core pipeline,
@@ -556,7 +578,7 @@ Limitations:
   `jarvis/.venv/bin/python3 -m jarvis.voice_loop`, not plain `python3`.
 - Only `hey_jarvis` has been tested; openWakeWord also ships `alexa`,
   `hey_mycroft`, `hey_rhasspy` pretrained models if you'd rather use one of those.
-- No barge-in — JARVIS can't be interrupted mid-response; it finishes
+- No barge-in — Orin can't be interrupted mid-response; it finishes
   speaking before listening for the next wake word.
 - RMS silence detection is a simple energy threshold, not true voice
   activity detection — a loud enough room can extend recording past when
@@ -607,7 +629,7 @@ of anything:
   bridge calls `cli.process_turn(text, cfg, mem, interactive=True, confirm_fn=...)`
   in a worker thread (it's synchronous — blocking network/subprocess calls,
   same as the CLI) → sends back `{"type": "reply", "label": cli.label(backend), "text": response}`.
-  The label shown is *always* `cli.label()`'s actual output — JARVIS,
+  The label shown is *always* `cli.label()`'s actual output — Orin,
   Calendar, Notes, Files, Shell, Claude Code — never reimplemented or
   guessed at in the frontend.
 - **Confirmations are not bypassed**: when `process_turn` needs to confirm
@@ -640,7 +662,7 @@ of anything:
 
 ### Visual design
 
-Electric-blue holographic HUD modelled on the classic JARVIS interface
+Electric-blue holographic HUD modelled on the classic Orin interface
 look: a compact glowing core inside a layered SVG reticle (tick ring,
 segmented arcs, dashed ring, node dots, corner brackets — each rotating at
 a different rate), a large command rail down the left, comms log right,
@@ -652,7 +674,7 @@ size and a fixed position — a primary voice-loop toggle with its own state
 LED, then Wake / Mute / Stop / Screen, then the two routing overrides. The
 bottom bar keeps only the text input and Send.
 
-**The core shows what state JARVIS is in.** `ui.setStatus()` stamps the
+**The core shows what state Orin is in.** `ui.setStatus()` stamps the
 state on `<html>`, and the whole HUD answers to it at once: the core
 caption (LISTENING / PROCESSING / SPEAKING / LINK LOST), the orb colour,
 the level arc, the corner brackets, and the reticle's rotation speed. The
@@ -723,7 +745,7 @@ the voice loop — the same interrupt path push-to-talk uses.
 - **Text input only** — the UI sends typed text, not audio, to the bridge.
   Voice input still means either dictating into the CLI's terminal (Wispr)
   or running the separate always-on voice loop; the two aren't merged yet.
-- User mic-level reactivity (visualizing *your* voice, not just JARVIS's
+- User mic-level reactivity (visualizing *your* voice, not just Orin's
   replies) wasn't built this pass — worth adding later, but out of scope
   for a pure presentation layer with no voice-input wiring yet.
 

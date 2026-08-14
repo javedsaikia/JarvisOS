@@ -283,7 +283,7 @@ export class UI {
   // dump their full reply into the DOM instantly, which read as "typed
   // ahead of" the TTS audio rather than alongside it. This paces the
   // reveal at a fixed rate approximating natural speech, so text lands on
-  // screen roughly in step with JARVIS actually saying it. Streamed Ollama
+  // screen roughly in step with Orin actually saying it. Streamed Ollama
   // replies (appendReplyChunk) already arrive incrementally in real
   // generation time and are left alone — they don't need a synthetic pace.
   private static readonly TYPE_CHARS_PER_SEC = 16;
@@ -444,7 +444,7 @@ export class UI {
   }
 
   private setStatusFromLabel(): void {
-    // A completed turn in an active voice session means JARVIS is ready for
+    // A completed turn in an active voice session means Orin is ready for
     // the next utterance, not idle and waiting for another wake phrase.
     this.setStatus(this.voiceRunning ? "listening" : "idle");
   }
@@ -461,7 +461,7 @@ export class UI {
 
   setConnectionState(connected: boolean): void {
     this.banner.classList.toggle("hidden", connected);
-    this.banner.textContent = "Disconnected from JARVIS bridge — reconnecting…";
+    this.banner.textContent = "Disconnected from Orin bridge — reconnecting…";
     this.connected = connected;
     if (!connected) this.setStatus("offline");
     // Every command in the rail is a message to the bridge, so with the

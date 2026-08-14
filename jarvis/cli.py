@@ -1,4 +1,4 @@
-"""JARVIS text conversation loop. Ollama by default; escalates to Claude Code when
+"""Orin text conversation loop. Ollama by default; escalates to Claude Code when
 the router flags genuine agentic/coding work. Ready to accept Wispr transcripts
 via --once for voice-pipeline integration.
 """
@@ -152,7 +152,7 @@ def handle_claude_code(user_text: str, cfg: dict, interactive: bool, confirm_fn=
 
 def handle_email(user_text: str, cfg: dict) -> str:
     """Escalates to Claude Code, which already has a real, first-party
-    Gmail connection — JARVIS's own backend has no mailbox access of its
+    Gmail connection — Orin's own backend has no mailbox access of its
     own and isn't an MCP host, so this can't be answered locally the way
     calendar/notes reads are. Read-only, so unlike handle_claude_code this
     skips the "hand off to Claude Code?" confirm gate — that prompt is
@@ -336,7 +336,7 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
             "content": (
                 f"Tool result for {call['name']}: {result}\n\n"
                 "Now answer the original question in plain natural language, in your "
-                "JARVIS persona. Do not output JSON."
+                "Orin persona. Do not output JSON."
             ),
         },
     ]
@@ -465,7 +465,7 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
             "content": (
                 f"Tool result for {call['name']}: {result}\n\n"
                 "Now answer the original question in plain natural language, in your "
-                "JARVIS persona. Do not output JSON."
+                "Orin persona. Do not output JSON."
             ),
         },
     ]
@@ -769,16 +769,16 @@ def label(backend: str) -> str:
         return "[Sarvam Hindi]"
     if backend == "sarvam:as-IN":
         return "[Sarvam Assamese]"
-    # The local model is JARVIS itself as far as anyone using this is
+    # The local model is Orin itself as far as anyone using this is
     # concerned — "Ollama" is the runtime it happens to be served by, and
     # naming the plumbing in the transcript reads like a different
     # assistant answered. Every other label here names the capability, not
     # the vendor behind it.
-    return "[JARVIS]"
+    return "[Orin]"
 
 
 def main():
-    parser = argparse.ArgumentParser(description="JARVIS text conversation loop")
+    parser = argparse.ArgumentParser(description="Orin text conversation loop")
     parser.add_argument("--once", help="Process a single transcript (e.g. from Wispr) and exit")
     parser.add_argument("--no-speak", action="store_true", help="Disable TTS for this run, regardless of config")
     args = parser.parse_args()
@@ -794,7 +794,7 @@ def main():
         speak_response(response, cfg)
         return
 
-    print(f"JARVIS online. Good day, {cfg['user_name']}. Type /help for commands.\n")
+    print(f"Orin online. Good day, {cfg['user_name']}. Type /help for commands.\n")
     while True:
         try:
             user_text = input("You: ").strip()

@@ -1,19 +1,19 @@
 #!/bin/bash
-# Start JARVIS (bridge + voice loop).
+# Start Orin (bridge + voice loop).
 #
 # Run this from YOUR OWN Terminal. macOS grants Input Monitoring — which
 # push-to-talk needs to see the Control+Option keypress — to the
-# "responsible" app that started the process. A JARVIS launched by some
+# "responsible" app that started the process. A Orin launched by some
 # other tool inherits that tool's permissions instead of your Terminal's,
 # and push-to-talk then silently receives nothing.
 #
-#   ./start_jarvis.sh          start it
-#   ./start_jarvis.sh stop     stop it
-#   ./start_jarvis.sh log      follow the voice log
+#   ./start_orin.sh          start it
+#   ./start_orin.sh stop     stop it
+#   ./start_orin.sh log      follow the voice log
 set -u
 cd "$(dirname "$0")" || exit 1
 
-BRIDGE_LOG=/tmp/jarvisos_bridge.log
+BRIDGE_LOG=/tmp/orin_bridge.log
 VOICE_LOG=/tmp/voice_loop.log
 PY=jarvis/.venv/bin/python3
 
@@ -26,7 +26,7 @@ stop_all() {
 case "${1:-start}" in
   stop)
     stop_all
-    echo "JARVIS stopped."
+    echo "Orin stopped."
     exit 0
     ;;
   log)
@@ -86,7 +86,7 @@ done
 
 echo
 if [ "$online" != 1 ]; then
-    echo "JARVIS did NOT come up: the voice loop never reported itself online."
+    echo "Orin did NOT come up: the voice loop never reported itself online."
     echo
     echo "--- $VOICE_LOG"
     if [ -s "$VOICE_LOG" ]; then
@@ -126,8 +126,8 @@ PYEOF
 case "$combo" in
     # Empty means the check itself failed, which is not the same thing as
     # push-to-talk being off — say so instead of guessing.
-    "")         echo "JARVIS is running (could not read push-to-talk config, see above)." ;;
-    disabled)   echo "JARVIS is running (push-to-talk disabled in config)." ;;
-    *)          echo "JARVIS is running. Hold $combo and speak, or say \"Hey Jarvis\"." ;;
+    "")         echo "Orin is running (could not read push-to-talk config, see above)." ;;
+    disabled)   echo "Orin is running (push-to-talk disabled in config)." ;;
+    *)          echo "Orin is running. Hold $combo and speak, or say \"Hey Jarvis\"." ;;
 esac
-echo "Follow the log with:  ./start_jarvis.sh log"
+echo "Follow the log with:  ./start_orin.sh log"

@@ -1,4 +1,4 @@
-// Thin WebSocket client for the JARVIS bridge (jarvis/bridge.py).
+// Thin WebSocket client for the Orin bridge (jarvis/bridge.py).
 // Mirrors the message protocol exactly — no logic/decisions happen here,
 // just relaying. Routing/cost/confirmation decisions all happen server-side.
 
@@ -36,7 +36,7 @@ export type ServerMessage =
 
 type Listener = (msg: ServerMessage) => void;
 
-export class JarvisSocket {
+export class OrinSocket {
   private ws: WebSocket | null = null;
   private listeners: Listener[] = [];
   private url: string;

@@ -1,7 +1,7 @@
 // Circular waveform wrapped around the core.
 //
 // The orb glows and swells with audio, but glow alone is a poor read of
-// "JARVIS is mid-sentence" — the eye needs shape change, not just
+// "Orin is mid-sentence" — the eye needs shape change, not just
 // brightness. This draws the last ~2 seconds of measured amplitude as
 // bars around the circle, newest at the top, mirrored left/right so the
 // figure stays symmetric. Speech becomes a visible ripple travelling

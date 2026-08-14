@@ -9,8 +9,8 @@ none of them are about the model:
    server — the same choice already made for AppleScript and screencapture
    elsewhere in this project.
 
-2. **JARVIS was the thing on screen.** With the HUD open (often
-   fullscreen), a plain screenshot is a picture of JARVIS, and the honest
+2. **Orin was the thing on screen.** With the HUD open (often
+   fullscreen), a plain screenshot is a picture of Orin, and the honest
    answer to "what's on my screen" became "a glowing blue orb". Rather
    than minimising the window and hoping, this composites the screen from
    the window list *with the HUD window left out*
@@ -66,9 +66,9 @@ class ScreenPermissionError(ScreenCaptureError):
 
 
 PERMISSION_HELP = (
-    "macOS is not letting JARVIS see the screen. Grant \"Screen Recording\" to the "
-    "app that started JARVIS (Terminal, or whatever you ran ./start_jarvis.sh from) "
-    "in System Settings > Privacy & Security > Screen Recording, then restart JARVIS."
+    "macOS is not letting Orin see the screen. Grant \"Screen Recording\" to the "
+    "app that started Orin (Terminal, or whatever you ran ./start_orin.sh from) "
+    "in System Settings > Privacy & Security > Screen Recording, then restart Orin."
 )
 
 # Layers above the normal window layer are system chrome (menu bar, Dock,
@@ -191,7 +191,7 @@ def capture(hud_marker: str = "", max_width: int = 0) -> tuple[bytes, dict]:
     """Capture the screen as JPEG bytes, plus what was captured.
 
     `hud_marker` is matched against window titles; every match is left out
-    of the composite. That is how the JARVIS HUD keeps itself out of its
+    of the composite. That is how the Orin HUD keeps itself out of its
     own screenshot without being minimised.
 
     Returns (jpeg_bytes, meta) where meta records the method used, the

@@ -5,7 +5,7 @@ it played itself. Voice-loop replies never reach the browser at all: they
 are synthesized and handed to `afplay`, which plays them on the Mac's
 speakers (see tts.play). So during an actual spoken conversation — the
 main way this thing is used — the orb had no signal and sat still while
-JARVIS was talking.
+Orin was talking.
 
 Rather than inventing motion for those turns, this publishes the real
 thing: the amplitude envelope measured from the exact WAV bytes about to

@@ -4,7 +4,7 @@ knows how to run sync tool calls via loop.run_in_executor, so no async
 plumbing is needed here).
 
 A single persistent Chromium instance, launched lazily on first use (not
-at JARVIS startup) and reused across turns — this is "a controlled
+at Orin startup) and reused across turns — this is "a controlled
 instance" the user can see and that remembers logins, not a fresh
 incognito window spawned per command and not the user's actual daily
 browser. State-changing actions (open_url/click/type_text) are NOT

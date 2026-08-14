@@ -263,7 +263,7 @@ def describe_screen(
     user is talking to is a cost worth paying only when it buys something.
     """
     prompt = question.strip() if question and question.strip() else DEFAULT_QUESTION
-    hud_marker = cfg.get("screen_hud_window_marker", "J.A.R.V.I.S.")
+    hud_marker = cfg.get("screen_hud_window_marker", "Orin HUD")
     native = screen_capture.available()
     hide_ui = cfg.get("screen_hide_ui", True) and not native
 
