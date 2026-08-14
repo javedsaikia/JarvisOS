@@ -9,13 +9,17 @@ loop (where Wispr dictation IS used) is unaffected by any of this.
 
 Run with: python3 -m jarvis.voice_loop
 """
+import os
 import queue
+import subprocess
 import sys
+import tempfile
 import time
 import threading
 import traceback
 import re
 import signal
+import wave
 from collections import deque
 
 import numpy as np
@@ -162,25 +166,31 @@ def _strip_leading_wake_phrase(text: str) -> str:
     return stripped or text
 
 
-_ACK_TONE: np.ndarray | None = None
+_ACK_TONE_PATH: str | None = None
 
 
-def _ack_tone() -> np.ndarray:
-    """A short rising two-note chime, synthesized once and cached.
+def _ack_tone_path() -> str:
+    """Path to a short rising two-note chime, rendered once on first use.
 
     JARVIS had no way of telling the user it had started listening, so
     after saying "Hey Jarvis" you were talking into a system whose state
     you couldn't see — and if you paused first, it had already given up.
     Siri, Alexa and Google all play a tone here for exactly this reason.
-    Generated with numpy rather than shipping an audio asset. Played
-    through sounddevice rather than tts.play(): that writes a temp file
-    and spawns afplay, measured at 1.32s for 160ms of audio, which would
-    put more delay in front of the user than the cue is worth. The already
-    open audio stack does the same job in 0.29s.
+    Synthesized with numpy rather than shipping an audio asset.
+
+    Played by handing a file to afplay rather than through sounddevice.
+    sd.play() is much quicker (0.29s vs ~1.15s of process spawn) but opens
+    an output stream on the shared PortAudio instance, and on a combined
+    mic-and-speaker device such as EarPods that makes CoreAudio renegotiate
+    and kills our input stream — seen live as "PaMacCore (AUHAL) Error
+    -10851: Audio Unit: Invalid Property Value" immediately after the wake
+    word, taking the microphone down with it. afplay is a separate process
+    and has never disturbed the input stream, which is also why every
+    spoken reply already goes out that way.
     """
-    global _ACK_TONE
-    if _ACK_TONE is not None:
-        return _ACK_TONE
+    global _ACK_TONE_PATH
+    if _ACK_TONE_PATH is not None and os.path.exists(_ACK_TONE_PATH):
+        return _ACK_TONE_PATH
 
     def note(freq: float, ms: int, amp: float = 0.22) -> np.ndarray:
         n = int(SAMPLE_RATE * ms / 1000)
@@ -192,8 +202,15 @@ def _ack_tone() -> np.ndarray:
             samples[-fade:] *= np.linspace(1.0, 0.0, fade)
         return samples
 
-    _ACK_TONE = np.concatenate([note(660, 70), note(990, 90)]).astype(np.float32)
-    return _ACK_TONE
+    pcm = (np.concatenate([note(660, 70), note(990, 90)]) * 32767).astype(np.int16)
+    path = os.path.join(tempfile.gettempdir(), "jarvis_ack_tone.wav")
+    with wave.open(path, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(SAMPLE_RATE)
+        handle.writeframes(pcm.tobytes())
+    _ACK_TONE_PATH = path
+    return path
 
 
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
@@ -543,7 +560,7 @@ class VoiceLoop:
 
     def _play_ack_tone(self) -> None:
         try:
-            sd.play(_ack_tone(), SAMPLE_RATE, blocking=True)
+            subprocess.run(["afplay", _ack_tone_path()], capture_output=True, timeout=5)
         except Exception:
             return  # a missing chime must never take down a turn
         # The tone is our own output, so make sure it can't survive in the
