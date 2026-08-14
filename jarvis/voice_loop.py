@@ -956,9 +956,13 @@ class VoiceLoop:
     ) -> str:
         # Straight after a wake word the user has said they intend to
         # speak, so wait properly for them; a follow-up listen is
-        # speculative and should give up quickly.
+        # speculative and should give up quickly. _force_wake_listen is set
+        # when they called JARVIS by name mid-conversation, which is the
+        # same explicit "I'm about to talk" signal as a fresh wake.
+        expecting_speech = not already_in_conversation or getattr(self, "_force_wake_listen", False)
+        self._force_wake_listen = False
         audio, heard_speech = self.record_utterance(
-            bail_seconds=None if already_in_conversation else self.wake_listen_seconds
+            bail_seconds=self.wake_listen_seconds if expecting_speech else None
         )
         utterance_done_at = time.perf_counter()
         # Skip Whisper when nothing was said. This return value used to be
@@ -998,7 +1002,19 @@ class VoiceLoop:
         print(f"You said: {text}")
 
         if already_in_conversation and _is_bare_wake_phrase(text):
-            print("(Already listening — no need to say the wake word again, go ahead.)\n")
+            # Answer it. This branch used to return in total silence: no
+            # chime (that only fires on a fresh wake) and no spoken reply,
+            # so calling JARVIS by name during an open window produced
+            # nothing observable whatsoever. Seen live, the user said "Hey
+            # Jarvis" four times in a row and got silence every time, which
+            # is indistinguishable from the whole thing being broken — the
+            # exact "I say Hey Jarvis and nothing happens" complaint. The
+            # chime says "I'm here, go ahead", and the flag below gives
+            # them the full wake-length window to actually say something
+            # rather than the 3s a speculative follow-up listen gets.
+            print("(Already listening — chiming so you know, go ahead.)\n")
+            self._play_ack_tone()
+            self._force_wake_listen = True
             return last_reply_text
 
         text = _strip_leading_wake_phrase(text)
