@@ -71,13 +71,25 @@ NOTES_READ_PATTERNS = [
 # host and has no mailbox access of its own. Deliberately read-only for
 # now, same scoping as calendar/notes reads; "send an email" is not
 # handled here and would need its own write-confirm path if ever added.
+# One vocabulary for "the mailbox", reused by every pattern below. "gmail"
+# was missing from all of them, so the most natural way to ask — "check my
+# Gmail" — matched nothing, fell through to the plain LLM, and got answered
+# with "I can't access your email", which is what "JARVIS can't check my
+# inbox" actually was. The Gmail connection itself was working the whole
+# time (verified end to end against the real mailbox).
+_MAILBOX = r"(?:e-?mails?|inbox|mail|gmail|g-mail)"
+
 EMAIL_READ_PATTERNS = [
-    r"\bcheck (my |the )?(emails?|e-?mails?|inbox|mail)\b",
-    r"\b(any|new)\b.*\b(unread )?(emails?|e-?mails?)\b",
-    r"\bdo i have (any )?(new |unread )?(emails?|e-?mails?|mail)\b",
-    r"\bread (my |the )?(emails?|e-?mails?|inbox|mail)\b",
-    r"\bwhat('s| is) in (my |the )?(inbox|emails?|e-?mails?)\b",
-    r"\b(unread|new) (emails?|e-?mails?|mail)\b",
+    rf"\bcheck (my |the )?{_MAILBOX}\b",
+    rf"\bread (out |through )?(my |the )?{_MAILBOX}\b",
+    rf"\bgo through (my |the )?{_MAILBOX}\b",
+    rf"\bsummar(?:ize|ise) (my |the )?{_MAILBOX}\b",
+    rf"\bopen (my |the )?{_MAILBOX}\b",
+    rf"\bdo i have (any )?(new |unread )?{_MAILBOX}\b",
+    rf"\bwhat('s| is| are)? ?(in )?(my |the )?{_MAILBOX}\b",
+    rf"\bany (new |unread )?{_MAILBOX}\b",
+    rf"\b(unread|new) {_MAILBOX}\b",
+    rf"\b(any|new)\b.*\b(unread )?{_MAILBOX}\b",
 ]
 
 # Read-only by design — see cli.handle_spotify. The connected Spotify MCP
