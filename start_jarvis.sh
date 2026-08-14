@@ -67,17 +67,67 @@ asyncio.run(main())
 PYEOF
 
 echo "Waiting for the voice loop to come up (models load on first start)..."
+online=0
+seen_proc=0
 for _ in $(seq 1 90); do
-    grep -q "voice loop online" "$VOICE_LOG" 2>/dev/null && break
+    if grep -q "voice loop online" "$VOICE_LOG" 2>/dev/null; then
+        online=1
+        break
+    fi
+    if pgrep -f "jarvis.voice_loop" > /dev/null 2>&1; then
+        seen_proc=1
+    elif [ "$seen_proc" = 1 ]; then
+        # It was alive and now isn't: it died during startup. No point
+        # sitting out the rest of the wait.
+        break
+    fi
     sleep 2
 done
 
 echo
+if [ "$online" != 1 ]; then
+    echo "JARVIS did NOT come up: the voice loop never reported itself online."
+    echo
+    echo "--- $VOICE_LOG"
+    if [ -s "$VOICE_LOG" ]; then
+        cat "$VOICE_LOG"
+    else
+        echo "(empty — the voice loop produced no output at all)"
+    fi
+    echo
+    echo "--- $BRIDGE_LOG (last 20 lines)"
+    if [ -s "$BRIDGE_LOG" ]; then
+        tail -n 20 "$BRIDGE_LOG"
+    else
+        echo "(empty)"
+    fi
+    echo
+    echo "Try again, or run the voice loop in the foreground to see it fail:"
+    echo "  $PY -u -m jarvis.voice_loop"
+    exit 1
+fi
+
 cat "$VOICE_LOG"
 echo
-if grep -q "push-to-talk" "$VOICE_LOG"; then
-    echo "JARVIS is running. Hold Control+Option and speak, or say \"Hey Jarvis\"."
-else
-    echo "JARVIS is running (push-to-talk disabled in config)."
-fi
+
+# Ask the config itself, rather than inferring push-to-talk from whatever
+# happens to be in the log — an empty log used to read as "disabled".
+combo=$("$PY" - <<'PYEOF'
+from jarvis import config, hotkey
+cfg = config.load_config()
+if cfg.get("push_to_talk_enabled", True):
+    keys = tuple(cfg.get("push_to_talk_combo", hotkey.DEFAULT_COMBO))
+    print(hotkey.PushToTalk(keys).describe())
+else:
+    print("disabled")
+PYEOF
+)
+
+case "$combo" in
+    # Empty means the check itself failed, which is not the same thing as
+    # push-to-talk being off — say so instead of guessing.
+    "")         echo "JARVIS is running (could not read push-to-talk config, see above)." ;;
+    disabled)   echo "JARVIS is running (push-to-talk disabled in config)." ;;
+    *)          echo "JARVIS is running. Hold $combo and speak, or say \"Hey Jarvis\"." ;;
+esac
 echo "Follow the log with:  ./start_jarvis.sh log"
