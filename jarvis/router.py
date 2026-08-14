@@ -289,6 +289,12 @@ SCREEN_PATTERNS = [
     r"\bdescribe what i('m| am) (looking at|seeing)\b",
     r"\bwhat do you see\b",
     r"\btake a screenshot\b",
+    # The obvious ways to ask, none of which matched: "what am I looking
+    # at", "describe my screen", "read my screen", "can you see my screen".
+    r"\bwhat am i (looking at|seeing)\b",
+    r"\b(describe|read|check|look at|analyse|analyze) (my |the |this )?screen\b",
+    r"\bcan you see (my |the )?screen\b",
+    r"\bwhat('s| is) (this|that) on (my |the )?screen\b",
 ]
 
 # Browser actions are LLM-mediated (like FILES_PATTERNS below) — click
@@ -333,6 +339,15 @@ FILES_PATTERNS = [
     r"\bsearch (for |my )?(a |the )?files?\b",
     r"\bfind (a |the |my )?files?\b",
     r"\bsearch (my |the )?(desktop|documents|downloads)\b",
+    # Ordinary phrasings that matched nothing: "what files do I have on my
+    # Desktop", "do I have a file about taxes", "show me the contents of
+    # README.md" (the existing rule needs the literal word "file" after
+    # "contents of", which nobody says when naming an actual filename).
+    r"\bwhat files\b",
+    r"\bdo i have (a |any )?(file|document)s?\b",
+    r"\bshow me (the )?contents of\b",
+    r"\b(any|which) (files?|documents?)\b.*\b(desktop|documents|downloads|folder|directory)\b",
+    r"\blook (in|at) (my |the )?(desktop|documents|downloads)\b",
 ]
 
 # Shell commands get their own domain, deliberately NOT LLM-mediated: "run

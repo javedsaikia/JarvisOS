@@ -300,6 +300,11 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
             cfg["ollama_model"],
             cfg["ollama_host"],
             tools=registry.TOOL_SCHEMAS,
+            # Same reasoning as handle_browser: tool SELECTION should be as
+            # near deterministic as this model allows. At default sampling
+            # this path asked "did you mean filenames or contents?" instead
+            # of just searching, and refused a Desktop listing outright.
+            options={"temperature": 0.1},
             keep_alive=cfg.get("ollama_keep_alive"),
         )
     except ollama_client.OllamaError as e:

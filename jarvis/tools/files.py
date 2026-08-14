@@ -7,6 +7,7 @@ whole home directory) so JARVIS can actually answer questions about real
 personal files without reaching into ~/.ssh, ~/Library (app data, browser
 profiles, anything keychain-adjacent), or other apps' private storage.
 """
+import os
 import subprocess
 from pathlib import Path
 
@@ -34,8 +35,28 @@ def _resolve_write(path: str) -> Path:
     return candidate
 
 
+# "Desktop", "/Desktop", "~/Desktop" and "Documents/foo.pdf" all mean the
+# one in the user's home folder. Models reliably emit the leading-slash
+# form — measured, qwen2.5-coder answers "list the files on my Desktop"
+# with {"path": "/Desktop"} — which resolves to a root directory that does
+# not exist, gets refused as outside the allowed roots, and the model then
+# tells the user their Desktop is off limits. It is not; the path was.
+_HOME_FOLDERS = ("Desktop", "Documents", "Downloads")
+
+
+def _rewrite_home_folder(path: str) -> str:
+    stripped = path.strip().lstrip("/")
+    if not stripped:
+        return path
+    first, _, rest = stripped.partition("/")
+    for folder in _HOME_FOLDERS:
+        if first.lower() == folder.lower():
+            return str(Path.home() / folder / rest) if rest else str(Path.home() / folder)
+    return path
+
+
 def _resolve_read(path: str) -> Path:
-    raw = Path(path).expanduser()
+    raw = Path(_rewrite_home_folder(path)).expanduser()
     candidate = (raw if raw.is_absolute() else PROJECT_ROOT / raw).resolve()
     for root in READ_ONLY_ROOTS:
         try:
@@ -82,7 +103,59 @@ def list_dir(path: str = ".") -> str:
     return "\n".join(f"{e.name}/" if e.is_dir() else e.name for e in entries)
 
 
-_SEARCH_EXCLUDE_SEGMENTS = ("/node_modules/", "/.venv/", "/__pycache__/", "/.git/", "/dist/")
+_SEARCH_EXCLUDE_SEGMENTS = (
+    "/node_modules/", "/.venv/", "/__pycache__/", "/.git/", "/dist/",
+    # Chromium's own profile store lives inside the project and is full of
+    # files with ordinary-looking names ("README", "Config") that crowd out
+    # the user's real documents.
+    "/browser_profile/", "/.tmp.driveupload/",
+)
+
+
+# Depth is bounded so a walk of Documents can't wander into a deep tree
+# and stall a spoken turn; the excluded segments above prune the worst
+# offenders (node_modules and friends) before that limit matters.
+_WALK_MAX_DEPTH = 6
+
+
+def _walk_filename_matches(query: str, limit: int) -> list[str]:
+    """Filename search by walking the allowed roots directly.
+
+    Spotlight is not a dependable index for this. Measured on this machine:
+    `mdfind -onlyin <project> voice_loop` returned nothing while
+    jarvis/voice_loop.py plainly existed, and Desktop returned nothing at
+    all, even though mdfind found 480 hits elsewhere in the home folder.
+    Developer folders in particular often go unindexed, and mdfind reports
+    that as an empty result rather than an error — so "search my files"
+    answered "no files found" for files that were right there.
+    """
+    needle = query.lower().strip()
+    if not needle:
+        return []
+    matches: list[str] = []
+    for root in READ_ONLY_ROOTS:
+        if not root.exists():
+            continue
+        root_depth = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root):
+            current = Path(dirpath)
+            if len(current.parts) - root_depth >= _WALK_MAX_DEPTH:
+                dirnames[:] = []
+                continue
+            # Prune in place so os.walk never descends into them at all.
+            dirnames[:] = [
+                d for d in dirnames
+                if not d.startswith(".") and f"/{d}/" not in _SEARCH_EXCLUDE_SEGMENTS
+                and d not in ("node_modules", "__pycache__", "dist", ".venv", "browser_profile")
+            ]
+            for name in filenames:
+                if name.startswith("."):
+                    continue
+                if needle in name.lower():
+                    matches.append(str(current / name))
+                    if len(matches) >= limit:
+                        return matches
+    return matches
 
 
 def search_files(query: str, max_results: int = 15) -> str:
@@ -116,6 +189,16 @@ def search_files(query: str, max_results: int = 15) -> str:
                 continue
             seen.add(line)
             results.append(line)
+
+    # Always merge in a direct filename walk rather than trusting the
+    # index. mdfind still earns its place — it searches CONTENT of indexed
+    # documents (PDFs, Pages, Word), which a filename walk cannot — but it
+    # cannot be the only source when whole folders are missing from it.
+    if len(results) < max_results:
+        for path in _walk_filename_matches(query, max_results - len(results)):
+            if path not in seen:
+                seen.add(path)
+                results.append(path)
 
     if not results:
         return f'No files found matching "{query}".'

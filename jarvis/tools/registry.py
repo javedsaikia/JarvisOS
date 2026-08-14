@@ -185,6 +185,14 @@ def build_tool_prompt(schemas: list[dict] = FILE_TOOL_SCHEMAS) -> str:
         args = ", ".join(f'{name}: {spec.get("type", "any")}' for name, spec in props.items())
         lines.append(f"- {fn['name']}({args}) — {fn['description']}")
     lines.append(
+        "\nThese tools are REAL and available to you in this turn, and they work. The "
+        "general rule that you cannot act on this computer does NOT apply to them — it "
+        "exists for requests that reach you with no tool attached. Do not refuse a "
+        "request these tools can satisfy, and do not claim a path or folder is off "
+        "limits: each tool enforces its own limits and will tell you if something is "
+        "actually disallowed."
+    )
+    lines.append(
         "\nIMPORTANT: if the user's message matches one of these tools, you MUST call it — "
         "do not ask a clarifying follow-up question first, do not just chat about it. Respond "
         'with ONLY a single JSON object, nothing else, exactly like: {"name": "<tool_name>", '
