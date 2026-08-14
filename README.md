@@ -353,6 +353,19 @@ calendar/notes/email reads: automatic, no confirmation.
   When it does fall back, spoken answers say "near \<city\>, going by your
   network location" rather than stating the place as fact.
 - **Weather**: [Open-Meteo](https://open-meteo.com/) — free, no API key.
+- **Business phone numbers** (for "call \<restaurant\>"): Apple Maps via
+  MapKit — free, no API key, no account.
+
+  ```sh
+  jarvis/.venv/bin/pip install pyobjc-framework-MapKit
+  ```
+
+  Used instead of OpenStreetMap because OSM rarely carries phone numbers:
+  measured 1 of 32 places within 5km, versus a number for every nearby
+  restaurant MapKit returned. Note `MKLocalSearch` treats its region as a
+  ranking hint, not a filter — searching a name with no local match
+  happily returns one hundreds of km away — so `jarvis/maps_client.py`
+  discards anything beyond 25km and every confirmation shows the distance.
 - **Nearby places**: OpenStreetMap's Overpass API — free, no API key.
   Tries three known public mirrors in sequence (the main instance
   returned a real 504 under load during development — a known

@@ -73,6 +73,23 @@ def describe_weather() -> str:
     return f'It\'s currently {temp:.0f}\N{DEGREE SIGN}C with {weather["condition"]}{place}.'
 
 
+# Names from the most recent nearby search, so "call them" / "call that
+# place" has something concrete to resolve instead of the model guessing.
+# Names only: these come from OpenStreetMap, which almost never carries
+# phone numbers here (1 of 32 within 5km), so the number itself is looked
+# up through Apple Maps at call time by name.
+_last_nearby_names: list[str] = []
+
+
+def remember_places(names: list[str]) -> None:
+    global _last_nearby_names
+    _last_nearby_names = [n for n in names if n and n != "(unnamed)"]
+
+
+def last_places() -> list[str]:
+    return list(_last_nearby_names)
+
+
 def describe_nearby(category: str, radius_m: int = 3000) -> str:
     if category not in lc.CATEGORY_TAGS:
         known = ", ".join(sorted(lc.CATEGORY_TAGS))
@@ -80,6 +97,7 @@ def describe_nearby(category: str, radius_m: int = 3000) -> str:
 
     loc = lc.get_location()
     results = lc.search_nearby(loc["lat"], loc["lon"], category, radius_m=radius_m)
+    remember_places([r.get("name", "") for r in results])
     label = CATEGORY_LABELS.get(category, category)
     if not results:
         return f"I couldn't find any {label} within {radius_m // 1000}km."

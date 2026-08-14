@@ -251,6 +251,27 @@ CALL_PATTERNS = [
     r"\bcall\b.*\d{3}",
     r"\bdial\b.*\d{3}",
     r"\bdial (this |that )?number\b",
+    # Calling a place by name ("call Hotel Heritage") or referring back to
+    # one ("call them"). Without these, only spoken digits reached
+    # cli.handle_call and everything else fell through to the plain LLM —
+    # which answered "I'll place a call" and then "I'm en route", having
+    # done neither. The number is looked up and shown before anything is
+    # dialled; see handle_call.
+    #
+    # The negative lookahead is what keeps this safe. English is full of
+    # "call" idioms that have nothing to do with telephones, and dialling
+    # a stranger because someone said "call it a day" is not a recoverable
+    # mistake.
+    # Bare it/this/that are excluded here rather than allowed: they are far
+    # more often idiom ("what do you call this", "call it a day") than a
+    # real request, and the genuine forms are already covered — "call this
+    # number" by the first pattern above and "call that place" by the
+    # referential one below.
+    r"\b(?:call|ring|phone)\s+(?:up\s+)?(?:the\s+)?"
+    r"(?!it\b|this\b|that\b|me\b|you\b|us\b|back\b|off\b|out\b|in\b|for\b|on\b|upon\b|"
+    r"an? (?:meeting|ambulance|taxi|cab|uber)\b)"
+    r"[A-Za-z][\w'&.\-]*(?:\s+[\w'&.\-]+){0,4}\s*$",
+    r"\bcall (them|him|her|that place|that one|that restaurant|that hotel)\b",
 ]
 
 # Deliberately narrow — "write a script to rename files" must still escalate

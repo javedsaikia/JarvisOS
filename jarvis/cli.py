@@ -8,7 +8,7 @@ import re
 import subprocess
 from typing import Callable
 
-from jarvis import claude_handoff, location_client, ollama_client, router, sarvam_client, tts
+from jarvis import claude_handoff, location_client, maps_client, ollama_client, router, sarvam_client, tts
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.persona import build_system_prompt
@@ -544,14 +544,47 @@ def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_co
         return "Calling is disabled in config."
 
     number = calling.parse_phone_number(user_text)
-    if not number:
-        return "I couldn't tell what number to call — try saying the digits clearly, e.g. \"call 555-123-4567\"."
+    label = None
+    detail = ""
 
-    if interactive and not confirm_fn(f"Call {number}?"):
+    if not number:
+        # No digits spoken, so this names a place ("call Hotel Heritage")
+        # or refers back to one ("call them"). Resolving a name to a number
+        # is a lookup, never a guess — if nothing is found nothing is
+        # dialled, and the resolved number is always shown before the call.
+        target = calling.extract_call_target(user_text)
+        if target is None:
+            remembered = location.last_places()
+            if len(remembered) == 1:
+                target = remembered[0]
+            elif remembered:
+                options = ", ".join(remembered[:4])
+                return f"Which one would you like me to call — {options}?"
+            else:
+                return "I'm not sure who you mean — say the name or the number."
+
+        try:
+            here = location_client.get_location()
+            place = maps_client.find_phone(target, here["lat"], here["lon"])
+        except (location_client.LocationError, maps_client.MapsError) as e:
+            return f"(Couldn't look that up: {e})"
+
+        if not place:
+            return (
+                f'I couldn\'t find a phone number for "{target}" near you. '
+                "Tell me the number and I'll dial it."
+            )
+        number = calling.normalize_number(place["phone"])
+        label = place["name"]
+        km = place["distance_m"] / 1000
+        detail = f" ({km:.1f}km away)" if km >= 0.1 else " (nearby)"
+
+    prompt = f"Call {label} on {number}{detail}?" if label else f"Call {number}?"
+    if interactive and not confirm_fn(prompt):
         return "Cancelled — call not placed."
 
     try:
-        return calling.call_number(number)
+        return calling.call_number(number, label)
     except calling.CallingError as e:
         return f"(Call failed: {e})"
 
