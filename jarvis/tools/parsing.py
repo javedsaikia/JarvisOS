@@ -172,7 +172,7 @@ def extract_shell_command(text: str) -> str:
 
 
 # Anchored to the start of the string, this never matched real dictated
-# speech, which leads with something before the verb ("Hey Jarvis, can you
+# speech, which leads with something before the verb ("Hey Orin, can you
 # play...", "I want you to play..."). The whole sentence was then handed to
 # Spotify search verbatim — live, "can you play a song by Pink Floyd High
 # Hopes on Spotify" returned "The Point Of No Return by Jonathan Young".

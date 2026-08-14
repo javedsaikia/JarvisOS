@@ -1,8 +1,9 @@
-"""Always-on voice loop: continuous mic capture -> wake word ("Hey Jarvis")
+"""Always-on voice loop: continuous mic capture -> wake phrase ("Hey Orin")
 -> record utterance -> local transcription -> normal Orin pipeline -> TTS.
 
-Everything here is local: openWakeWord for the wake word, faster-whisper for
-transcription of the triggered utterance. Wispr Flow isn't used in this
+Everything here is local: the wake phrase is spotted by VAD + a small
+Whisper (jarvis/wake_phrase.py, so the phrase is whatever config says),
+and faster-whisper transcribes the utterance. Wispr Flow isn't used in this
 mode — it's a dictation tool bound to a focused text field, not an ambient
 background listener, so it can't drive this loop. The terminal `cli.py`
 loop (where Wispr dictation IS used) is unaffected by any of this.
@@ -27,7 +28,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from jarvis import cli, hotkey, sarvam_client, voice_events
+from jarvis import cli, hotkey, sarvam_client, voice_events, wake_phrase
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.tools import spotify
@@ -81,7 +82,7 @@ NO_SPEECH_BAIL_SECONDS = 3.0
 # ...but only for speculative listens (the follow-up window, where usually
 # nobody is there). Straight after a wake word the user has explicitly said
 # they want to talk, so cutting them off at 3s is wrong — that is what
-# "I say Hey Jarvis and it doesn't respond" actually was: the wake word
+# "I say the wake phrase and it doesn't respond" actually was: the wake
 # fired, the user paused to gather the sentence, and Orin had already
 # stopped listening with no cue that it ever started. Field-tested
 # Whisper-assistant configs sit around 12s before returning to idle.
@@ -94,7 +95,7 @@ WAKE_LISTEN_SECONDS = 10.0
 # not be the whole thing. SHUTDOWN is checked first in run() and `break`s
 # immediately, so "stop listening" is claimed by SHUTDOWN_RE before
 # INTERRUPT_RE's bare "stop" ever gets a chance to also match it.
-INTERRUPT_RE = re.compile(r"\b(?:stop(?:\s+jarvis)?|jarvis\s+stop|be\s+quiet|quiet|silence)\b")
+INTERRUPT_RE = re.compile(r"\b(?:stop(?:\s+or[ie]n)?|or[ie]n\s+stop|be\s+quiet|quiet|silence)\b")
 SHUTDOWN_RE = re.compile(r"\b(?:stop\s+listening|quit|exit|shutdown|go\s+to\s+sleep)\b")
 
 # cli.process_turn's /hindi and /assamese routing needs a literal slash
@@ -122,18 +123,58 @@ def _normalize_for_compare(text: str) -> str:
 # narrow, so a genuine follow-up that happens to start with the name (e.g.
 # "Orin, can you check my email") is never swallowed by this, only a
 # bare repeat of the wake phrase itself. Covers the STT variants actually
-# seen live for "Hey Jarvis" (accent-stripped, fused words, "Jervis").
-_BARE_WAKE_PHRASES = {
-    "hey jarvis", "hey jervis", "hey jrvis", "hey jarviss",
-    "hi jarvis", "hej jarvis", "hej jrvis", "hej jervis",
-    "jarvis", "jervis", "jrvis", "hejervis",
-}
+# seen live for the wake phrase (accent-stripped, fused words).
+# Rebuilt from config at startup by configure_wake_phrases(); these are
+# the defaults for "hey orin", including how Whisper actually renders it
+# (measured: "Hey Oren", "Hey, Orange.", "Our in").
+_BARE_WAKE_PHRASES: set[str] = set()
+_LEADING_WAKE_PHRASE_RE: re.Pattern | None = None
+
+# One table, shared with the detector — these are the same STT spellings,
+# and two copies would drift the moment either is tuned.
+_NAME_MISHEARINGS = wake_phrase.NAME_MISHEARINGS
+
+
+def configure_wake_phrases(phrases: list[str]) -> None:
+    """Point the follow-up/echo handling at the configured wake phrase.
+
+    These two checks are about what the user *says mid-conversation*, not
+    about waking: repeating the name during an open window shouldn't be
+    sent to the LLM as a question, and a repeated name at the start of a
+    command shouldn't end up baked into the command text. Both need the
+    same list of spellings the STT produces, so they are derived from the
+    same config as the detector rather than hardcoded a second time.
+    """
+    global _BARE_WAKE_PHRASES, _LEADING_WAKE_PHRASE_RE
+    leads = ["hey", "hi", "hej", "hello", "ok", "okay"]
+    bare: set[str] = set()
+    names: set[str] = set()
+    for phrase in phrases:
+        words = _normalize_for_compare(phrase).split()
+        if not words:
+            continue
+        name = words[-1]
+        for spelling in [name, *_NAME_MISHEARINGS.get(name, [])]:
+            names.add(spelling)
+            bare.add(spelling)
+            bare.add(spelling.replace(" ", ""))
+            for lead in leads:
+                bare.add(f"{lead} {spelling}")
+                bare.add(f"{lead}{spelling}".replace(" ", ""))
+    _BARE_WAKE_PHRASES = bare
+    escaped = "|".join(sorted((re.escape(n) for n in names), key=len, reverse=True))
+    _LEADING_WAKE_PHRASE_RE = re.compile(
+        rf"^(?:{'|'.join(leads)})?\s*(?:{escaped})\b[!,.]?\s*", re.IGNORECASE
+    )
+
+
+configure_wake_phrases(["hey orin"])
 
 
 def _is_bare_wake_phrase(text: str) -> bool:
     """True if text is just the wake phrase repeated and nothing else.
 
-    Seen live: saying "Hey Jarvis" again while a conversation window is
+    Seen live: saying the wake phrase again while a conversation window is
     already open gets transcribed as ordinary follow-up speech (no wake-
     word model involved — that only runs when NOT already in an active
     window) and sent straight to the LLM, which answers as if freshly
@@ -143,12 +184,6 @@ def _is_bare_wake_phrase(text: str) -> bool:
     phrase to genuinely start a fresh conversation is unaffected.
     """
     return _normalize_for_compare(text) in _BARE_WAKE_PHRASES
-
-
-_LEADING_WAKE_PHRASE_RE = re.compile(
-    r"^(?:hey|hi|hej|hail)\s+(?:jarvis|jervis|jrvis)\b[!,.]?\s*",
-    re.IGNORECASE,
-)
 
 
 def _strip_leading_wake_phrase(text: str) -> str:
@@ -173,7 +208,7 @@ def _ack_tone_path() -> str:
     """Path to a short rising two-note chime, rendered once on first use.
 
     Orin had no way of telling the user it had started listening, so
-    after saying "Hey Jarvis" you were talking into a system whose state
+    after saying the wake phrase you were talking into a system whose state
     you couldn't see — and if you paused first, it had already given up.
     Siri, Alexa and Google all play a tone here for exactly this reason.
     Synthesized with numpy rather than shipping an audio asset.
@@ -403,17 +438,50 @@ class VoiceLoop:
         # used to be — the old boolean got consumed at the top of each loop
         # iteration and only re-armed at the end of a *completed* turn, so
         # any single "didn't catch anything" (a pause, speaking too quietly)
-        # silently dropped back to requiring "Hey Jarvis" again. That was
+        # silently dropped back to requiring the wake phrase again. That was
         # the actual mechanical cause of the conversation feeling like it
         # kept turning on and off. A deadline that persists across empty
         # attempts and only expires after real inactivity fixes that.
         self.conversation_active_until: float | None = None
         self._barge_frames: deque[np.ndarray] = deque(maxlen=12)
         self._barge_frames_lock = threading.Lock()
-        print(f'Loading wake word model ("{self.wake_word}")...')
-        self.wake_model = WakeWordModel(wakeword_models=[self.wake_word], inference_framework="onnx")
+        # Two ways to be woken, same interface (reset/predict) so nothing
+        # downstream cares which is in use:
+        #   "phrase" — VAD segments speech, a small Whisper transcribes it,
+        #              and the configured phrase is matched in the text.
+        #              Any phrase at all, no model to train.
+        #   "model"  — an openWakeWord detector. Lower CPU and it fires
+        #              mid-phrase, but the pretrained set is hey_jarvis /
+        #              alexa / hey_mycroft / hey_rhasspy, all of them
+        #              someone else's product name.
+        self.wake_mode = cfg.get("wake_mode", "phrase")
+        # Key the detector's score dict by. In model mode it has to be the
+        # openWakeWord model's own name; in phrase mode nothing external
+        # dictates it, and "hey_jarvis" appearing as a live dict key in the
+        # renamed product is exactly the sort of leftover that confuses
+        # someone reading a log six months from now.
+        self.wake_key = "wake" if self.wake_mode == "phrase" else self.wake_word
+        configure_wake_phrases(cfg.get("wake_phrases") or ["hey orin"])
         print(f'Loading local speech-to-text model (faster-whisper {cfg["voice_stt_model"]})...')
         self.whisper = WhisperModel(cfg["voice_stt_model"], device="cpu", compute_type="int8")
+        if self.wake_mode == "phrase":
+            phrases = cfg.get("wake_phrases") or ["hey orin"]
+            print(f'Loading wake phrase detector ("{phrases[0]}")...')
+            # An empty wake_stt_model means "share the command model above"
+            # — no second download, no extra memory, and better recall than
+            # a smaller one (see jarvis/wake_phrase.py).
+            wake_size = cfg.get("wake_stt_model", "")
+            self.wake_model = wake_phrase.PhraseWake(
+                phrases,
+                stt_model_size=wake_size,
+                key="wake",
+                model=None if wake_size else self.whisper,
+            )
+        else:
+            print(f'Loading wake word model ("{self.wake_word}")...')
+            self.wake_model = WakeWordModel(
+                wakeword_models=[self.wake_word], inference_framework="onnx"
+            )
         print("Loading voice activity detector (Silero VAD, onnx)...")
         self.vad = SileroVAD()
         self._vad_buffer = np.zeros(0, dtype=np.float32)
@@ -521,13 +589,8 @@ class VoiceLoop:
         calibrated = max(self._base_silence_rms_threshold, median * 2.2)
         print(f"  ambient RMS median {median:.0f} / p90 {p90:.0f} -> silence threshold set to {calibrated:.0f}")
         self.silence_rms_threshold = calibrated
-        print('  barge-in: say "Hey Jarvis" to interrupt (wake-word gated, not volume)')
-        # The product is Orin; the spoken phrase is still "Hey Jarvis"
-        # because voice_wake_word points at openWakeWord's pretrained
-        # hey_jarvis model, and there is no pretrained "hey orin". Saying
-        # the new name here would be a lie the user would discover by
-        # standing in front of a microphone repeating it.
-        print('  (the wake phrase is still "Hey Jarvis" — see README, "Wake phrase")')
+        print(f'  barge-in: say "{self.wake_label()}" to interrupt '
+              '(phrase-gated, not volume)')
         if self.push_to_talk is not None:
             print(f"  push-to-talk: hold {self.push_to_talk.describe()} and speak "
                   "(no wake word needed, works over music and noise)")
@@ -537,6 +600,14 @@ class VoiceLoop:
                 # letting the key appear to do nothing.
                 print("     if nothing happens, grant Input Monitoring: System Settings >")
                 print("     Privacy & Security > Input Monitoring > enable your terminal")
+
+    def wake_label(self) -> str:
+        """What to tell the user to say. Comes from whichever detector is
+        actually loaded, so the banner can never advertise a phrase that
+        isn't the one being listened for."""
+        if self.wake_mode == "phrase":
+            return " ".join(w.capitalize() for w in self.wake_model.describe().split())
+        return self.wake_word.replace("_", " ").title()
 
     def listen_for_wake_word(self) -> None:
         self.wake_model.reset()
@@ -549,7 +620,7 @@ class VoiceLoop:
                 return
             frame = self._next_frame()
             prediction = self.wake_model.predict(frame)
-            if prediction.get(self.wake_word, 0.0) > WAKE_THRESHOLD:
+            if prediction.get(self.wake_key, 0.0) > WAKE_THRESHOLD:
                 return
 
     def _watch_for_barge_in(
@@ -568,10 +639,13 @@ class VoiceLoop:
         drops" actually was. Chasing it with a higher threshold and a
         fuzzy transcript filter also ate 36 genuine user commands.
 
-        openWakeWord makes the problem structurally impossible instead:
-        Orin's own speech never contains "Hey Jarvis", so it cannot
-        trigger this, at any volume. Same contract Alexa uses — say the
-        wake word to interrupt.
+        Gating on the wake phrase makes the problem structurally
+        impossible instead: Orin does not say its own wake phrase, so its
+        voice cannot trigger this at any volume. Same contract Alexa uses
+        — say the phrase to interrupt. (In phrase mode the check is a
+        transcript match rather than a wake-word model, so the guarantee
+        is "Orin never says it" rather than "no model can fire on it" —
+        which is why the persona is told not to greet itself.)
         """
         # Fed every frame, including while disarmed, so the model always
         # has continuous context and a wake word spanning the moment
@@ -592,7 +666,7 @@ class VoiceLoop:
                     cli.shell.cancel_current()
                 stop_event.set()
                 return
-            score = self.wake_model.predict(frame).get(self.wake_word, 0.0)
+            score = self.wake_model.predict(frame).get(self.wake_key, 0.0)
             processing = processing_active is not None and processing_active.is_set()
             if not playback_active.is_set() and not processing:
                 # This thread starts before the response is ready, so that
@@ -870,7 +944,7 @@ class VoiceLoop:
 
     def run(self) -> None:
         mem = MemoryStore()
-        wake_phrase = self.wake_word.replace("_", " ").title()
+        wake_label = self.wake_label()
         first_start = True
         # Chosen explicitly rather than left to sd.default.device, which
         # goes stale the moment a microphone is plugged in or removed.
@@ -890,9 +964,9 @@ class VoiceLoop:
                     self.calibrate()
                     if first_start:
                         first_start = False
-                        print(f'Orin voice loop online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
+                        print(f'Orin voice loop online, {self.cfg["user_name"]}. Say "{wake_label}" to begin.\n')
                     else:
-                        print(f'Orin back online, {self.cfg["user_name"]}. Say "{wake_phrase}" to begin.\n')
+                        print(f'Orin back online, {self.cfg["user_name"]}. Say "{wake_label}" to begin.\n')
                     self._conversation_loop(mem)
             except _StreamDead:
                 print(
@@ -1047,7 +1121,27 @@ class VoiceLoop:
         # speculative and should give up quickly. _force_wake_listen is set
         # when they called Orin by name mid-conversation, which is the
         # same explicit "I'm about to talk" signal as a fresh wake.
-        if self.push_to_talk is not None and self.push_to_talk.held.is_set():
+        pending = None
+        if self.wake_mode == "phrase":
+            pending = self.wake_model.take_pending_audio()
+            if pending is not None and _is_bare_wake_phrase(self.wake_model.last_transcript):
+                # Just the name and nothing else: that is someone getting
+                # our attention before they have decided what to say, so
+                # fall through and listen properly instead of handing the
+                # LLM its own wake phrase as a question.
+                pending = None
+
+        if pending is not None and pending.size:
+            # The phrase detector fires at the END of the utterance, so
+            # "hey orin, what's the weather" is already recorded in full by
+            # the time we get here. Recording again would capture the
+            # silence after it and answer "didn't catch anything" to a
+            # question the user had just finished asking. Reuse the audio
+            # instead — same words, no second pass, and a turn that starts
+            # sooner than the wake-word model's did.
+            self._force_wake_listen = False
+            audio, heard_speech = pending, True
+        elif self.push_to_talk is not None and self.push_to_talk.held.is_set():
             # Key is down: exact boundaries, none of the guessing below.
             self._force_wake_listen = False
             audio, heard_speech = self.record_while_held()
@@ -1101,7 +1195,7 @@ class VoiceLoop:
             # nothing observable whatsoever. Seen live, the user said "Hey
             # Orin" four times in a row and got silence every time, which
             # is indistinguishable from the whole thing being broken — the
-            # exact "I say Hey Jarvis and nothing happens" complaint. The
+            # exact "I say the name and nothing happens" complaint. The
             # chime says "I'm here, go ahead", and the flag below gives
             # them the full wake-length window to actually say something
             # rather than the 3s a speculative follow-up listen gets.

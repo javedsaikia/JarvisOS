@@ -246,7 +246,7 @@ _DEFAULT_MAX_AUTO_VOLUME = 75
 
 def _apply_volume_cap() -> None:
     """Caps the volume when Orin itself starts or resumes playback — seen
-    live: at volume 100, "Hey Jarvis" stopped registering at all (the mic
+    live: at volume 100, the wake phrase stopped registering at all (the mic
     has no echo/noise cancellation, so loud music at full volume drowns out
     the wake word before it ever reaches the pipeline). Only applies when
     Orin starts playback; explicit volume_up/volume_down/mute commands

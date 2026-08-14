@@ -21,6 +21,22 @@ DEFAULTS = {
     "tts_enabled": True,
     "tts_backend": "piper",
     "tts_voice_model": "jarvis/voices/en_GB-alan-medium.onnx",
+    # How Orin is woken.
+    #   "phrase" — VAD + a small local Whisper spot whatever phrase you put
+    #              in wake_phrases. No model to train, and nothing named
+    #              after somebody else's product. See jarvis/wake_phrase.py.
+    #   "model"  — an openWakeWord detector named by voice_wake_word. Lower
+    #              CPU and it fires mid-phrase, but the pretrained set is
+    #              hey_jarvis / alexa / hey_mycroft / hey_rhasspy only.
+    "wake_mode": "phrase",
+    "wake_phrases": ["hey orin"],
+    # Empty means "share voice_stt_model", which is the default and costs
+    # nothing extra. Set a size (e.g. "tiny.en") to load a separate,
+    # faster model for spotting — measured at 0.1s per utterance against
+    # small.en's 0.6s, but it renders an invented name inconsistently
+    # enough to miss real wakes. See jarvis/wake_phrase.py.
+    "wake_stt_model": "",
+    # Only used when wake_mode is "model".
     "voice_wake_word": "hey_jarvis",
     "voice_stt_model": "small.en",
     "voice_context_turns": 6,

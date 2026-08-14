@@ -4,7 +4,7 @@ The idea is borrowed from Clicky (https://www.heyclicky.com,
 github.com/farzaa/clicky), which invokes with a hotkey rather than a wake
 word. That choice solves a real problem here rather than being a nicety.
 Everything a wake word depends on is probabilistic and was observed
-failing repeatedly: the wake model has to hear "Hey Jarvis" over room
+failing repeatedly: the wake detector has to hear the wake phrase over room
 noise and music, the VAD then has to agree speech happened (measured
 scoring 0.03 on audio peaking at RMS 3553), and the listen window has to
 still be open when the user actually starts talking. A key being held is

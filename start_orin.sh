@@ -123,11 +123,15 @@ else:
 PYEOF
 )
 
+# Same reason as the combo above: read the phrase from config, so this can
+# never tell you to say something the loop isn't listening for.
+wake=$("$PY" -c 'from jarvis import config; p = config.load_config().get("wake_phrases") or ["hey orin"]; print(" ".join(w.capitalize() for w in p[0].split()))')
+
 case "$combo" in
     # Empty means the check itself failed, which is not the same thing as
     # push-to-talk being off — say so instead of guessing.
     "")         echo "Orin is running (could not read push-to-talk config, see above)." ;;
     disabled)   echo "Orin is running (push-to-talk disabled in config)." ;;
-    *)          echo "Orin is running. Hold $combo and speak, or say \"Hey Jarvis\"." ;;
+    *)          echo "Orin is running. Hold $combo and speak, or say \"$wake\"." ;;
 esac
 echo "Follow the log with:  ./start_orin.sh log"

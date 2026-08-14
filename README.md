@@ -15,7 +15,7 @@ pipeline):
 # Text loop — type, or dictate with Wispr Flow into the terminal prompt
 python3 -m jarvis.cli
 
-# Always-on voice loop — say "Hey Jarvis" (see "Wake phrase" below), no typing at all
+# Always-on voice loop — say "Hey Orin", no typing at all
 jarvis/.venv/bin/python3 -m jarvis.voice_loop
 
 # Web UI — audio-reactive orb + transcript, needs the bridge + dev server (two terminals):
@@ -93,7 +93,10 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `tts_enabled` — speak every reply out loud via Piper (default `true`)
 - `tts_backend` — `"piper"` (the only backend implemented)
 - `tts_voice_model` — path to the Piper `.onnx` voice model, relative to the project root
-- `voice_wake_word` — openWakeWord pretrained model for the always-on voice loop (default `"hey_jarvis"` — the spoken phrase, see [Wake phrase](#wake-phrase))
+- `wake_mode` — `"phrase"` (default; spot any phrase with VAD + Whisper) or `"model"` (an openWakeWord detector). See [Wake phrase](#wake-phrase)
+- `wake_phrases` — what to say to wake it (default `["hey orin"]`); the last word is treated as the name and matched allowing for how speech-to-text mangles it
+- `wake_stt_model` — empty (default) shares the command model; set a size to load a separate, faster one for spotting
+- `voice_wake_word` — only used when `wake_mode` is `"model"`: which openWakeWord pretrained model to load (default `"hey_jarvis"`)
 - `voice_stt_model` — faster-whisper model size for transcribing voice commands (default `"small.en"`)
 - `voice_context_turns` — how many recent turns the voice loop includes in the prompt; lower is faster
 - `voice_ollama_model` — optional smaller model for spoken turns only; defaults to the main `ollama_model`
@@ -501,39 +504,78 @@ jarvis/.venv/bin/python3 -m jarvis.voice_loop
 ```
 
 Continuous mic capture — no terminal typing, no per-turn dictation. Say
-"Hey Jarvis", then your request; it transcribes, routes, and speaks the
+"Hey Orin", then your request; it transcribes, routes, and speaks the
 reply, then goes back to listening.
 
 ### Wake phrase
 
-**The assistant is called Orin. The wake phrase is still "Hey Jarvis."**
+**Say "Hey Orin."** The phrase is whatever you put in config, and nothing
+in it is named after another product:
 
-That is not an oversight. `voice_wake_word` names a *pretrained*
-openWakeWord model, and the pretrained set is fixed — `hey_jarvis`,
-`alexa`, `hey_mycroft`, `hey_rhasspy`. There is no "hey orin", so setting
-one would mean the loop listens for a model that does not exist and never
-wakes. Printing "say Hey Orin" in the startup banner would be a lie you
-would only discover by standing in front of a microphone repeating it, so
-the banner says the phrase that actually works and points here.
+```json
+"wake_mode": "phrase",
+"wake_phrases": ["hey orin"],
+```
 
-Two ways out, whenever you want one:
+This is not a pretrained wake-word model, because there is no pretrained
+"hey orin" to use. openWakeWord ships exactly four — `hey_jarvis`,
+`alexa`, `hey_mycroft`, `hey_rhasspy` — so a product built on the
+pretrained set is permanently woken by somebody else's brand, which is
+fine for a hobby and not fine for anything you intend to ship.
 
-- **Push-to-talk** already avoids the question entirely — hold
-  Control+Option and speak, no phrase at all. It is also the more reliable
-  path over music and room noise (`jarvis/hotkey.py`; needs Input
-  Monitoring permission, and `./check_hotkey.sh` verifies it).
-- **Train a custom "Hey Orin" model.** openWakeWord supports custom
-  wake words; drop the resulting model where the loop can load it and set
-  `voice_wake_word` to its name. Nothing else in the code changes. This is a genuinely different pipeline
-from the text loop's Wispr integration, because Wispr Flow doesn't do
-ambient background listening — it's a dictation tool bound to a focused
-text field. So this mode uses its own fully local stack instead:
+Instead (`jarvis/wake_phrase.py`): Silero VAD marks each stretch of
+speech, the loop's own Whisper transcribes that stretch, and the phrase is
+matched in the text. Nothing to train, nothing downloaded that carries a
+name, and the phrase is a config line rather than a model file.
 
-- **Wake word**: [openWakeWord](https://github.com/dscripka/openWakeWord)'s
-  pretrained `hey_jarvis` model (ONNX, runs continuously on CPU, no account/API key needed)
+**Why the matching is fuzzy.** Whisper is not a keyword spotter — it
+writes what it hears through an English lexicon, so an invented name comes
+back as the nearest real word, and a *different* one each time. Measured
+across models on one synthesized "Hey Orin": `Oren`, `Orrin`, `Arin`,
+`Arryn`, `Orange`, `Auring`, `or in`. So the name is matched by
+similarity, with the wilder renderings listed explicitly, and two rules
+keep that from firing on ordinary speech:
+
+- the loose spellings are only accepted straight after a lead word ("hey",
+  "ok", "hi"), so *"the orange juice is in the fridge"* stays quiet while
+  *"hey Orange"* wakes it;
+- a bare name at the start of an utterance ("Orin, check my calendar") is
+  accepted only for the close spellings.
+
+Verified end to end against synthesized speech — 13/13, including *"I was
+reading about the origin of the universe"* and *"play some music on
+Spotify"* correctly ignored.
+
+**What it costs.** The detector shares the command Whisper, so there is no
+second model and no extra memory. VAD runs per frame as it already did;
+transcription runs only when someone actually speaks, at ~0.65s per
+utterance. Setting `wake_stt_model` to e.g. `"tiny.en"` loads a separate
+faster model (~0.1s) — measured, it misses real wakes often enough that
+sharing the bigger model is the better default.
+
+**One real trade-off.** A wake-word model fires *mid-phrase*; this fires
+when you stop speaking. In exchange the whole utterance is already
+captured, so "hey Orin, what's the weather" needs no second recording —
+the same audio is reused, which is quicker overall than waking and then
+listening again. Saying just "Hey Orin" still chimes and waits, as before.
+
+**Going back to a trained model** is a config flip, not a code change:
+
+```json
+"wake_mode": "model",
+"voice_wake_word": "hey_jarvis"
+```
+
+and if you ever want a *trained* "hey orin", openWakeWord's custom
+training produces a model file that drops straight into that same setting.
+
+- **Wake phrase**: VAD-segmented speech transcribed by the same local
+  Whisper and matched against `wake_phrases` (`jarvis/wake_phrase.py`) — see
+  [Wake phrase](#wake-phrase) above. `wake_mode: "model"` switches to
+  [openWakeWord](https://github.com/dscripka/openWakeWord) instead.
 - **Transcription**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
-  (`small.en` by default), only run on the few seconds of audio after the
-  wake word fires — not continuously
+  (`small.en` by default), run on each stretch of speech rather than
+  continuously
 - **Utterance boundary**: simple RMS-energy silence detection (`jarvis/voice_loop.py`)
   — not full WebRTC VAD, kept minimal on purpose. The threshold is
   **auto-calibrated at startup** (`VoiceLoop.calibrate()`): it samples ~2.5s
@@ -559,11 +601,12 @@ Setup (already done in this repo, for reference / reinstalling elsewhere):
 
 ```bash
 jarvis/.venv/bin/pip install sounddevice numpy openwakeword faster-whisper
-jarvis/.venv/bin/python3 -c "from openwakeword.utils import download_models; download_models(['hey_jarvis'])"
-# faster-whisper downloads its model automatically on first run
+# faster-whisper downloads its model automatically on first run.
+# openwakeword is only needed for wake_mode: "model"; the default phrase
+# mode uses the Whisper above and the vendored Silero VAD, nothing else.
 ```
 
-Tested twice: first end-to-end with synthesized "Hey Jarvis, ..." phrases
+Tested twice: first end-to-end with synthesized "Hey Orin, ..." phrases
 (Piper) played through the speakers into the real mic, then live with
 Javed's actual voice. The live run surfaced a real calibration bug the
 synthetic test couldn't have caught (see below) — fixed and re-verified live
@@ -576,10 +619,14 @@ Limitations:
 - Requires `jarvis/.venv`'s Python specifically (`sounddevice`/`openwakeword`/
   `faster-whisper` aren't in system Python) — always launch with
   `jarvis/.venv/bin/python3 -m jarvis.voice_loop`, not plain `python3`.
-- Only `hey_jarvis` has been tested; openWakeWord also ships `alexa`,
-  `hey_mycroft`, `hey_rhasspy` pretrained models if you'd rather use one of those.
-- No barge-in — Orin can't be interrupted mid-response; it finishes
-  speaking before listening for the next wake word.
+- The wake phrase is matched from a transcript, so it fires when you stop
+  speaking rather than mid-phrase, and an unusual name will be misheard in
+  ways the shipped spelling list may not cover — add what you actually see
+  in the log to `NAME_MISHEARINGS` (`jarvis/wake_phrase.py`).
+- Barge-in is phrase-gated: say the wake phrase (or press push-to-talk)
+  to interrupt a reply. It is deliberately not volume-gated — this machine
+  has no echo cancellation, so a loudness threshold cuts Orin off on the
+  sound of its own voice.
 - RMS silence detection is a simple energy threshold, not true voice
   activity detection — a loud enough room can extend recording past when
   you've actually stopped talking (observed: one utterance ran the full 15s
