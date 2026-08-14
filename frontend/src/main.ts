@@ -4,93 +4,77 @@ import { AudioPlayer } from "./audio";
 import { UI } from "./ui";
 import { HudRing } from "./hud-ring";
 import { Visualizers } from "./visualizers";
+import { VoiceRing } from "./voice-ring";
+import { EnvelopePlayer } from "./envelope-player";
 import { JarvisSocket, type ServerMessage } from "./socket";
 import { SpotifyWidget } from "./spotify-widget";
 
-const BRIDGE_URL = "ws://localhost:8765";
+// Overridable with ?bridge=ws://host:port — the bridge is normally on this
+// machine, but this makes it possible to open the HUD from another device
+// on the LAN (or against a second bridge) without a rebuild.
+const BRIDGE_URL =
+  new URLSearchParams(location.search).get("bridge") || "ws://localhost:8765";
 
 const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
 const orb = new Orb(canvas);
 const ui = new UI();
 const spotifyWidget = new SpotifyWidget();
 const hudRing = new HudRing();
-const visionVideo = document.querySelector(".vision-video") as HTMLVideoElement | null;
+const voiceRing = new VoiceRing(document.getElementById("voice-ring") as HTMLCanvasElement);
 
-const audio = new AudioPlayer(
-  (amplitude) => {
-    orb.setAmplitude(amplitude);
-    ui.setAudioLevel(amplitude);
-    hudRing.setAmplitude(amplitude);
-  },
-  () => orb.setStatus("idle")
-);
-
-// Canvas telemetry panels — read the same real analyser as the orb.
-new Visualizers(audio);
-
-function startVisionMotionSampler(video: HTMLVideoElement | null): void {
-  if (!video) return;
-
-  const sampleCanvas = document.createElement("canvas");
-  sampleCanvas.width = 48;
-  sampleCanvas.height = 86;
-  const ctx = sampleCanvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return;
-
-  let previous: Uint8ClampedArray | null = null;
-  let smoothed = 0;
-  let smoothedBrightness = 0;
-  let rafId = 0;
-
-  const step = () => {
-    if (video.readyState >= 2 && !video.paused && !video.ended) {
-      ctx.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
-      const data = ctx.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height).data;
-      let brightnessSum = 0;
-      const pixelCount = sampleCanvas.width * sampleCanvas.height;
-      for (let i = 0; i < data.length; i += 4) {
-        brightnessSum += (data[i] + data[i + 1] + data[i + 2]) / 3;
-      }
-      const brightness = brightnessSum / pixelCount / 255;
-      smoothedBrightness += (brightness - smoothedBrightness) * 0.08;
-      if (previous && previous.length === data.length) {
-        let diff = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          const current = (data[i] + data[i + 1] + data[i + 2]) / 3;
-          const last = (previous[i] + previous[i + 1] + previous[i + 2]) / 3;
-          diff += Math.abs(current - last);
-        }
-        const normalized = Math.min(1, diff / (sampleCanvas.width * sampleCanvas.height * 36));
-        smoothed += (normalized - smoothed) * 0.12;
-      }
-      orb.setVideoSignal(smoothedBrightness, smoothed);
-      previous = new Uint8ClampedArray(data);
-    }
-    rafId = requestAnimationFrame(step);
-  };
-
-  const syncPlayback = () => {
-    if (!video.paused && !video.ended) {
-      if (rafId === 0) rafId = requestAnimationFrame(step);
-    } else {
-      orb.setVideoSignal(0, 0);
-    }
-  };
-
-  video.addEventListener("play", syncPlayback);
-  video.addEventListener("pause", () => orb.setVideoSignal(0, 0));
-  video.addEventListener("ended", () => orb.setVideoSignal(0, 0));
-  syncPlayback();
+// Single funnel for audio level, so it makes no difference to the visuals
+// whether the sound is playing in this tab (AnalyserNode) or out of the
+// Mac's speakers (envelope relayed from the voice loop). Both are measured
+// from real audio; neither is synthesized here.
+function applyAmplitude(amplitude: number): void {
+  orb.setAmplitude(amplitude);
+  ui.setAudioLevel(amplitude);
+  hudRing.setAmplitude(amplitude);
+  voiceRing.setAmplitude(amplitude);
 }
 
-startVisionMotionSampler(visionVideo);
+function setStatus(status: "idle" | "listening" | "thinking" | "speaking" | "error"): void {
+  orb.setStatus(status);
+  voiceRing.setStatus(status);
+  ui.setStatus(status);
+}
+
+const audio = new AudioPlayer(applyAmplitude, () => setStatus(voiceRunning ? "listening" : "idle"));
+
+// Canvas telemetry panels — read the same real analyser as the orb.
+const visualizers = new Visualizers(audio);
+
+// Spoken replies never reach this tab as audio, only as the envelope
+// measured from the clip the voice loop is playing. See envelope-player.ts.
+const envelopePlayer = new EnvelopePlayer(
+  (amplitude) => {
+    applyAmplitude(amplitude);
+    visualizers.setExternalLevel(amplitude);
+  },
+  (speaking) => {
+    visualizers.setExternalActive(speaking);
+    if (speaking) {
+      setStatus("speaking");
+    } else {
+      applyAmplitude(0);
+      visualizers.setExternalLevel(0);
+      setStatus(voiceRunning ? "listening" : "idle");
+    }
+  }
+);
 
 let connected = false;
+let voiceRunning = false;
 const socket = new JarvisSocket(BRIDGE_URL, (isConnected) => {
   connected = isConnected;
   ui.setConnectionState(isConnected);
   ui.setLink(BRIDGE_URL, isConnected);
-  orb.setStatus(isConnected ? "idle" : "error");
+  if (isConnected) {
+    setStatus(voiceRunning ? "listening" : "idle");
+  } else {
+    orb.setStatus("error");
+    voiceRing.setStatus("offline");
+  }
 });
 ui.setLink(BRIDGE_URL, connected);
 
@@ -107,7 +91,7 @@ socket.onMessage((msg: ServerMessage) => {
       ui.appendReply(msg.label, msg.text);
       ui.setBackendReadout(msg.label);
       highlightTier(msg.label);
-      orb.setStatus(msg.backend === "claude_code" ? "thinking" : "idle");
+      setStatus(msg.backend === "claude_code" ? "thinking" : "idle");
       break;
     }
     case "reply_start": {
@@ -122,22 +106,22 @@ socket.onMessage((msg: ServerMessage) => {
     }
     case "reply_end": {
       ui.finishReplyStream();
-      orb.setStatus("idle");
+      setStatus(voiceRunning ? "listening" : "idle");
       break;
     }
     case "confirm_request": {
       ui.appendConfirmPrompt(msg.prompt);
-      orb.setStatus("listening");
+      setStatus("listening");
       break;
     }
     case "audio": {
-      orb.setStatus("speaking");
+      setStatus("speaking");
       audio.enqueueBase64Wav(msg.data);
       break;
     }
     case "error": {
       ui.appendError(msg.message);
-      orb.setStatus("error");
+      setStatus("error");
       break;
     }
     case "muted": {
@@ -145,8 +129,26 @@ socket.onMessage((msg: ServerMessage) => {
       break;
     }
     case "voice_state": {
+      voiceRunning = msg.running;
       ui.setVoiceState(msg.running);
-      orb.setStatus(msg.running ? "listening" : "idle");
+      setStatus(msg.running ? "listening" : "idle");
+      break;
+    }
+    case "voice_audio": {
+      envelopePlayer.play(msg.envelope, msg.hz);
+      break;
+    }
+    case "voice_audio_end": {
+      envelopePlayer.stop();
+      break;
+    }
+    case "screen_frame": {
+      if (msg.error) ui.setScreenError(msg.error);
+      else if (msg.data) ui.setScreenFrame(msg.data);
+      break;
+    }
+    case "screen_feed_state": {
+      ui.setScreenFeedState(msg.enabled);
       break;
     }
     case "spotify_state": {
@@ -181,14 +183,15 @@ ui.onSend = (text) => {
 ui.onConfirm = (answer) => socket.sendConfirm(answer);
 ui.onMuteToggle = (muted) => (muted ? socket.mute() : socket.unmute());
 ui.onStop = () => {
-  // Client-side only, deliberately: playback happens in the browser, so
-  // there's no round trip needed to cut it off instantly. Doesn't cancel an
-  // in-flight LLM generation on the server — just stops what's already
-  // queued/playing here. audio.stop() intentionally clears source.onended
-  // before stopping (see audio.ts), so onPlaybackEnd doesn't fire on its
-  // own — set the status here instead.
+  // Both halves of "stop talking": audio.stop() kills what this tab is
+  // playing, and voice_interrupt reaches the voice loop, whose audio is
+  // coming out of the Mac's speakers where nothing in this tab can touch
+  // it. audio.stop() intentionally clears source.onended (see audio.ts),
+  // so onPlaybackEnd doesn't fire — set the status here instead.
   audio.stop();
-  orb.setStatus("idle");
+  envelopePlayer.stop();
+  socket.interruptVoice();
+  setStatus(voiceRunning ? "listening" : "idle");
 };
 ui.onVoiceToggle = (running) => {
   pulseCorners();
@@ -198,6 +201,7 @@ ui.onWake = () => {
   pulseCorners();
   socket.wakeVoice();
 };
+ui.onScreenToggle = (enabled) => socket.setScreenFeed(enabled);
 
 // Real elapsed session time since page load.
 const sessionStart = performance.now();

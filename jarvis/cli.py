@@ -762,7 +762,12 @@ def label(backend: str) -> str:
         return "[Sarvam Hindi]"
     if backend == "sarvam:as-IN":
         return "[Sarvam Assamese]"
-    return "[Ollama]"
+    # The local model is JARVIS itself as far as anyone using this is
+    # concerned — "Ollama" is the runtime it happens to be served by, and
+    # naming the plumbing in the transcript reads like a different
+    # assistant answered. Every other label here names the capability, not
+    # the vendor behind it.
+    return "[JARVIS]"
 
 
 def main():

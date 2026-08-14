@@ -12,8 +12,14 @@ const CORE_VERTEX_SHADER = `
   void main() {
     vNormal = normalize(normalMatrix * normal);
     vec3 pos = position;
-    float displacement = sin(pos.x * 4.0 + uTime * 1.5) * sin(pos.y * 4.0 + uTime * 1.2) * 0.04;
-    pos += normal * displacement * (0.3 + uAmplitude * 1.8);
+    // Slow swell that is always present, plus a faster ripple that only
+    // shows up with audio — the second one is what reads as "talking"
+    // rather than "breathing", because its rate changes with the sound
+    // instead of running on a fixed clock.
+    float swell = sin(pos.x * 4.0 + uTime * 1.5) * sin(pos.y * 4.0 + uTime * 1.2) * 0.04;
+    float ripple = sin(pos.y * 11.0 - uTime * 9.0 + uAmplitude * 6.0)
+                 * cos(pos.z * 9.0 + uTime * 5.0) * 0.028 * uAmplitude;
+    pos += normal * (swell * (0.3 + uAmplitude * 1.8) + ripple);
     vPosition = pos;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
   }
@@ -75,10 +81,6 @@ export class Orb {
   private smoothedAmplitude = 0;
   private targetStatusEnergy = 0;
   private smoothedStatusEnergy = 0;
-  private targetMotion = 0;
-  private smoothedMotion = 0;
-  private targetVideoBrightness = 0;
-  private smoothedVideoBrightness = 0;
   private targetColor = STATUS_COLORS.idle.clone();
   private renderedColor = STATUS_COLORS.idle.clone();
 
@@ -173,8 +175,6 @@ export class Orb {
     // Smooth toward the target so audio-driven jumps don't look jittery.
     this.smoothedAmplitude += (this.targetAmplitude - this.smoothedAmplitude) * 0.25;
     this.smoothedStatusEnergy += (this.targetStatusEnergy - this.smoothedStatusEnergy) * 0.05;
-    this.smoothedMotion += (this.targetMotion - this.smoothedMotion) * 0.08;
-    this.smoothedVideoBrightness += (this.targetVideoBrightness - this.smoothedVideoBrightness) * 0.06;
 
     // Slow breathing pulse scaled by the current status's energy floor —
     // guarantees visible motion while speaking even in the near-silent
@@ -186,31 +186,21 @@ export class Orb {
 
     this.coreMaterial.uniforms.uTime.value = t;
     this.coreMaterial.uniforms.uAmplitude.value = drive;
-    const videoBrightness = this.smoothedVideoBrightness;
-    const motion = this.smoothedMotion;
 
     this.renderedColor.copy(this.targetColor);
-    this.renderedColor.lerp(new THREE.Color(0xbef7ff), videoBrightness * 0.22);
-    this.renderedColor.lerp(new THREE.Color(0x8fdbff), motion * 0.16);
     (this.coreMaterial.uniforms.uColor.value as THREE.Color).lerp(this.renderedColor, 0.05);
 
-    const scale =
-      1 +
-      drive * 0.4 +
-      motion * 0.08 +
-      videoBrightness * 0.03 +
-      Math.sin(t * 1.4 + videoBrightness * 2.0) * 0.02;
+    const scale = 1 + drive * 0.4 + Math.sin(t * 1.4) * 0.02;
     this.core.scale.setScalar(scale);
-    this.wireframe.scale.setScalar(1 + drive * 0.22 + motion * 0.04 + videoBrightness * 0.02);
-    this.wireframe.rotation.y += 0.0025 + drive * 0.014 + motion * 0.002;
+    this.wireframe.scale.setScalar(1 + drive * 0.22);
+    this.wireframe.rotation.y += 0.0025 + drive * 0.014;
     this.wireframe.rotation.x += 0.0012;
 
-    this.particles.rotation.y += 0.0008 + drive * 0.009 + motion * 0.0015;
-    this.particles.rotation.x = Math.sin(t * 0.12) * 0.02 + motion * 0.015;
-    this.camera.position.x = Math.sin(t * 0.08) * 0.025 + motion * 0.03;
-    this.camera.position.y = Math.cos(t * 0.07) * 0.02 + motion * 0.02;
-    (this.particles.material as THREE.PointsMaterial).opacity =
-      0.4 + drive * 0.55 + motion * 0.12 + videoBrightness * 0.08;
+    this.particles.rotation.y += 0.0008 + drive * 0.009;
+    this.particles.rotation.x = Math.sin(t * 0.12) * 0.02;
+    this.camera.position.x = Math.sin(t * 0.08) * 0.025;
+    this.camera.position.y = Math.cos(t * 0.07) * 0.02;
+    (this.particles.material as THREE.PointsMaterial).opacity = 0.4 + drive * 0.55;
 
     this.composer.render();
   }
@@ -218,15 +208,6 @@ export class Orb {
   /** amplitude in [0, 1] — drive this from Web Audio analyser data each frame. */
   setAmplitude(amplitude: number): void {
     this.targetAmplitude = Math.max(0, Math.min(1, amplitude));
-  }
-
-  setMotion(motion: number): void {
-    this.targetMotion = Math.max(0, Math.min(1, motion));
-  }
-
-  setVideoSignal(brightness: number, motion: number): void {
-    this.targetVideoBrightness = Math.max(0, Math.min(1, brightness));
-    this.targetMotion = Math.max(this.targetMotion, Math.max(0, Math.min(1, motion)));
   }
 
   setStatus(status: OrbStatus): void {

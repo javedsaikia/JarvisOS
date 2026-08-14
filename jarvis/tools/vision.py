@@ -49,6 +49,48 @@ def capture_screenshot() -> bytes:
         path.unlink(missing_ok=True)
 
 
+def capture_screen_jpeg(max_width: int = 640) -> bytes:
+    """Small JPEG of the screen, for the web UI's live screen card.
+
+    Same `screencapture` as capture_screenshot, but straight to JPEG and
+    downscaled with `sips` (macOS's own image tool — no Pillow dependency,
+    matching the "native OS tool over a library" choice this file already
+    makes). A full-resolution Retina PNG is several megabytes; this is
+    tens of kilobytes, which is what makes it sane to push over the
+    WebSocket every couple of seconds.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        path = Path(f.name)
+    try:
+        result = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0 or not path.exists():
+            stderr = result.stderr.strip()
+            if "could not create image from display" in stderr.lower():
+                raise VisionError(
+                    "macOS is refusing to let JARVIS capture the screen — this app needs "
+                    "\"Screen Recording\" permission in System Settings > Privacy & "
+                    "Security > Screen Recording."
+                )
+            raise VisionError(f"screencapture failed: {stderr or 'unknown error'}")
+        # -Z fits the longest edge, preserving aspect ratio. A failure here
+        # is not fatal: the full-size capture is still a valid JPEG, just
+        # a heavier one.
+        subprocess.run(
+            ["sips", "-Z", str(max_width), "-s", "formatOptions", "60", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return path.read_bytes()
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def describe_screen(question: str | None, cfg: dict) -> str:
     """Captures the screen and asks a local Ollama vision model about it.
     `question` is the user's own phrasing when there is one (e.g. "what's

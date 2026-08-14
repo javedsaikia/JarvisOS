@@ -25,15 +25,16 @@ import signal
 import subprocess
 import threading
 import sys
+import time
 from pathlib import Path
 
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from jarvis import cli, tts
+from jarvis import cli, tts, voice_events
 from jarvis.config import load_config
 from jarvis.memory import LOG_PATH, MemoryStore
-from jarvis.tools import spotify
+from jarvis.tools import spotify, vision
 
 HOST = "localhost"
 PORT = 8765
@@ -56,6 +57,15 @@ _voice_proc: subprocess.Popen | None = None
 _connected_clients: set = set()
 _spotify_poll_task: asyncio.Task | None = None
 _transcript_poll_task: asyncio.Task | None = None
+_voice_events_poll_task: asyncio.Task | None = None
+_screen_feed_task: asyncio.Task | None = None
+
+# Live screen card. Set by default so the card shows something the moment
+# the UI opens, but the UI can switch it off (and the config can disable
+# it outright) — this takes real screenshots of the user's desktop, so it
+# needs an obvious off switch, not just a hidden config key.
+_screen_feed_on = threading.Event()
+_screen_feed_on.set()
 
 
 class _WebStreamingSpeech:
@@ -148,6 +158,49 @@ def _voice_running() -> bool:
     return _voice_proc is not None and _voice_proc.poll() is None
 
 
+def _watch_voice_process(proc: subprocess.Popen) -> None:
+    """Record how a spawned voice loop ended, in the voice log itself.
+
+    Seen live: the loop was spawned, died leaving a zero-byte log, and
+    nothing anywhere said why — no traceback (the process hadn't reached
+    voice_loop.main()'s try yet; module imports alone take seconds and
+    print nothing), and no macOS crash report. Without this, that failure
+    mode is indistinguishable from "never spawned at all".
+
+    The exit status separates the cases that were previously guesswork: a
+    negative code means a signal killed it (-15 SIGTERM points at another
+    process, e.g. a stray pkill; -9 SIGKILL at a force-kill or the OOM
+    killer), while a positive code means Python itself exited early and
+    the traceback, if any, is above this line.
+    """
+    started = time.monotonic()
+    # Polled rather than proc.wait(): _voice_stop() waits on the same
+    # Popen from the asyncio thread, and a blocking wait here holds the
+    # internal waitpid lock long enough to make that one spuriously time
+    # out and escalate to SIGKILL. poll() never holds it.
+    while (code := proc.poll()) is None:
+        time.sleep(0.25)
+    elapsed = time.monotonic() - started
+
+    if code < 0:
+        try:
+            name = signal.Signals(-code).name
+        except ValueError:
+            name = "unknown signal"
+        how = f"killed by signal {-code} ({name})"
+    elif code == 0:
+        how = "exited cleanly (code 0)"
+    else:
+        how = f"exited with code {code}"
+
+    try:
+        with open(VOICE_LOG_PATH, "a") as f:
+            f.write(f"\n[bridge] voice loop (pid {proc.pid}) {how} "
+                    f"after {elapsed:.1f}s.\n")
+    except OSError:
+        pass
+
+
 def _voice_start() -> bool:
     global _voice_proc
     with _voice_lock:
@@ -167,6 +220,9 @@ def _voice_start() -> bool:
             # Popen dup()s the fd for the child; our handle isn't needed
             # once the subprocess has it.
             log_file.close()
+        threading.Thread(
+            target=_watch_voice_process, args=(_voice_proc,), daemon=True
+        ).start()
         return True
 
 
@@ -209,6 +265,21 @@ def _voice_wake() -> bool:
             threading.Timer(0.5, send_wake).start()
         else:
             send_wake()
+        return True
+
+
+def _voice_interrupt() -> bool:
+    """Tell a running voice loop to stop talking (SIGUSR2 -> the same path
+    push-to-talk uses). Silent no-op when nothing is running, which is
+    also what the web UI's Stop button means in that state."""
+    with _voice_lock:
+        if not _voice_running():
+            return False
+        assert _voice_proc is not None
+        try:
+            _voice_proc.send_signal(signal.SIGUSR2)
+        except (ProcessLookupError, OSError):
+            return False
         return True
 
 
@@ -356,6 +427,120 @@ async def _spotify_poll_loop() -> None:
                 _connected_clients.discard(client)
 
 
+async def _broadcast(payload: str) -> None:
+    for client in list(_connected_clients):
+        try:
+            await client.send(payload)
+        except ConnectionClosed:
+            _connected_clients.discard(client)
+
+
+def _read_new_voice_events(offset: int) -> tuple[int, list[dict]]:
+    """Reads whatever voice_loop appended to the events file since `offset`.
+
+    Returns the new offset alongside the events. A file smaller than the
+    offset means voice_events truncated it (it caps its own size), so the
+    read restarts from the top rather than seeking past the end forever.
+    """
+    path = voice_events.EVENTS_PATH
+    if not path.exists():
+        return 0, []
+    size = path.stat().st_size
+    if size < offset:
+        offset = 0
+    if size == offset:
+        return offset, []
+    with path.open("r") as f:
+        f.seek(offset)
+        chunk = f.read()
+        new_offset = f.tell()
+    events = []
+    for line in chunk.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return new_offset, events
+
+
+async def _voice_events_poll_loop() -> None:
+    """Relays the voice loop's real speech telemetry to the web UI.
+
+    voice_loop.py plays its audio on the Mac's speakers, so the browser
+    never hears a spoken turn and its analyser has nothing to show. This
+    forwards the measured amplitude envelope of the clip actually being
+    played (see jarvis/voice_events.py) so the orb moves with real speech
+    instead of a fabricated animation.
+
+    Polled faster than the transcript loop because this one is used for
+    animation: the envelope carries its own timeline, but its arrival is
+    what marks "JARVIS started talking now".
+    """
+    loop = asyncio.get_running_loop()
+    # Start from the end of the file: events from before this bridge
+    # existed describe speech that finished long ago.
+    offset = 0
+    if voice_events.EVENTS_PATH.exists():
+        offset = voice_events.EVENTS_PATH.stat().st_size
+
+    while True:
+        await asyncio.sleep(0.1)
+        try:
+            offset, events = await loop.run_in_executor(
+                None, _read_new_voice_events, offset
+            )
+        except OSError:
+            continue
+        if not events or not _connected_clients:
+            continue
+        for event in events:
+            if event.get("type") == "speaking":
+                await _broadcast(json.dumps({
+                    "type": "voice_audio",
+                    "envelope": event.get("envelope", []),
+                    "hz": event.get("hz", voice_events.ENVELOPE_HZ),
+                    "duration": event.get("duration", 0),
+                }))
+            elif event.get("type") == "speaking_end":
+                await _broadcast(json.dumps({"type": "voice_audio_end"}))
+
+
+async def _screen_feed_loop() -> None:
+    """Pushes a real, downscaled screenshot to the UI's screen card.
+
+    The card used to loop a canned video clip labelled "Live Clip", which
+    is exactly the kind of thing this project doesn't do — so it now shows
+    the actual screen, via the same macOS `screencapture` the screen tool
+    already uses. Capture only happens when a client is watching AND the
+    feed is switched on, so nothing is screenshotted while the tab is
+    closed. A permission failure stops the loop entirely rather than
+    retrying every 2s forever: it can't fix itself without the user
+    granting Screen Recording and restarting.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(2)
+        if not _connected_clients or not _screen_feed_on.is_set():
+            continue
+        with _cfg_lock:
+            if not cfg.get("screen_feed_enabled", True):
+                continue
+        try:
+            jpeg = await loop.run_in_executor(None, vision.capture_screen_jpeg)
+        except vision.VisionError as e:
+            await _broadcast(json.dumps({"type": "screen_frame", "error": str(e)}))
+            return
+        except Exception:
+            continue
+        await _broadcast(json.dumps({
+            "type": "screen_frame",
+            "data": base64.b64encode(jpeg).decode("ascii"),
+        }))
+
+
 def _count_log_lines() -> int:
     if not LOG_PATH.exists():
         return 0
@@ -426,6 +611,12 @@ async def handle_connection(ws) -> None:
     try:
         await _send_voice_state(ws)
         await _send_spotify_state(ws)
+        with _cfg_lock:
+            feed_allowed = cfg.get("screen_feed_enabled", True)
+        await ws.send(json.dumps({
+            "type": "screen_feed_state",
+            "enabled": feed_allowed and _screen_feed_on.is_set(),
+        }))
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -449,6 +640,9 @@ async def handle_connection(ws) -> None:
                 _voice_wake()
                 await _send_voice_state(ws)
 
+            elif mtype == "voice_interrupt":
+                _voice_interrupt()
+
             elif mtype == "mute":
                 with _cfg_lock:
                     cfg["tts_enabled"] = False
@@ -458,6 +652,16 @@ async def handle_connection(ws) -> None:
                 with _cfg_lock:
                     cfg["tts_enabled"] = True
                 await ws.send(json.dumps({"type": "muted", "enabled": True}))
+
+            elif mtype == "screen_feed":
+                enabled = bool(msg.get("enabled"))
+                if enabled:
+                    _screen_feed_on.set()
+                else:
+                    _screen_feed_on.clear()
+                await _broadcast(json.dumps({
+                    "type": "screen_feed_state", "enabled": enabled,
+                }))
 
             elif mtype == "message":
                 text = (msg.get("text") or "").strip()
@@ -481,8 +685,11 @@ async def main() -> None:
     # tasks, so an unreferenced create_task() result is eligible for
     # garbage collection mid-run, silently killing the poll loop.
     global _spotify_poll_task, _transcript_poll_task
+    global _voice_events_poll_task, _screen_feed_task
     _spotify_poll_task = asyncio.create_task(_spotify_poll_loop())
     _transcript_poll_task = asyncio.create_task(_transcript_poll_loop())
+    _voice_events_poll_task = asyncio.create_task(_voice_events_poll_loop())
+    _screen_feed_task = asyncio.create_task(_screen_feed_loop())
     async with websockets.serve(handle_connection, HOST, PORT):
         await asyncio.Future()
 

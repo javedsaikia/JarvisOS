@@ -13,6 +13,12 @@ export type ServerMessage =
   | { type: "voice_state"; running: boolean; state: string }
   | { type: "error"; message: string }
   | { type: "transcript_turn"; role: "user" | "assistant"; content: string; label: string }
+  // Real amplitude envelope of a clip the voice loop is playing on the
+  // Mac's speakers — the browser never receives that audio itself.
+  | { type: "voice_audio"; envelope: number[]; hz: number; duration: number }
+  | { type: "voice_audio_end" }
+  | { type: "screen_frame"; data?: string; error?: string }
+  | { type: "screen_feed_state"; enabled: boolean }
   | {
       type: "spotify_state";
       active: boolean;
@@ -104,5 +110,15 @@ export class JarvisSocket {
 
   wakeVoice(): void {
     this.send({ type: "voice_wake" });
+  }
+
+  /** Stop a spoken reply that is playing on the Mac's speakers. Browser
+   * playback is stopped locally (audio.stop()); this is the other half. */
+  interruptVoice(): void {
+    this.send({ type: "voice_interrupt" });
+  }
+
+  setScreenFeed(enabled: boolean): void {
+    this.send({ type: "screen_feed", enabled });
   }
 }

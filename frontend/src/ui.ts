@@ -6,7 +6,21 @@ const STATUS_TEXT: Record<UIStatus, string> = {
   thinking: "Thinking…",
   speaking: "Speaking",
   error: "Error",
-  offline: "Disconnected — reconnecting…",
+  // Kept short: this sits in the status card's header row, where a longer
+  // phrase wraps and shoves the card's own title onto two lines.
+  offline: "Reconnecting…",
+};
+
+// The caption under the wordmark in the middle of the reticle. Shorter and
+// louder than the status card's wording — it's read at a glance from across
+// the room, which is the whole point of putting it in the core.
+const CORE_TEXT: Record<UIStatus, string> = {
+  idle: "CORE ONLINE",
+  listening: "LISTENING",
+  thinking: "PROCESSING",
+  speaking: "SPEAKING",
+  error: "FAULT",
+  offline: "LINK LOST",
 };
 
 export class UI {
@@ -17,11 +31,23 @@ export class UI {
   private stopBtn: HTMLButtonElement;
   private voiceBtn: HTMLButtonElement;
   private wakeBtn: HTMLButtonElement;
+  private screenBtn: HTMLButtonElement;
   private forceLocalBtn: HTMLButtonElement;
   private forceClaudeBtn: HTMLButtonElement;
   private statusDot: HTMLElement;
   private statusLabel: HTMLElement;
   private banner: HTMLElement;
+
+  // Command-rail button internals — each large button carries its own
+  // label/sub-label/indicator rather than just swapping its text.
+  private voiceLabel: HTMLElement;
+  private voiceSub: HTMLElement;
+  private muteLabel: HTMLElement;
+  private screenLabel: HTMLElement;
+  private screenStatus: HTMLElement;
+  private screenImg: HTMLImageElement;
+  private screenPlaceholder: HTMLElement;
+  private coreState: HTMLElement;
 
   // HUD readout panel — purely additive, independent of status-dot/statusLabel above.
   private readoutLink: HTMLElement;
@@ -36,6 +62,8 @@ export class UI {
   private awaitingConfirm = false;
   private voiceRunning = false;
   private voiceBusy = false;
+  private screenFeedOn = true;
+  private connected = true;
 
   onSend: ((text: string) => void) | null = null;
   onConfirm: ((answer: boolean) => void) | null = null;
@@ -43,6 +71,7 @@ export class UI {
   onStop: (() => void) | null = null;
   onVoiceToggle: ((running: boolean) => void) | null = null;
   onWake: (() => void) | null = null;
+  onScreenToggle: ((enabled: boolean) => void) | null = null;
 
   constructor() {
     this.transcript = document.getElementById("transcript")!;
@@ -52,11 +81,21 @@ export class UI {
     this.stopBtn = document.getElementById("stop-btn") as HTMLButtonElement;
     this.voiceBtn = document.getElementById("voice-btn") as HTMLButtonElement;
     this.wakeBtn = document.getElementById("wake-btn") as HTMLButtonElement;
+    this.screenBtn = document.getElementById("screen-btn") as HTMLButtonElement;
     this.forceLocalBtn = document.getElementById("force-local-btn") as HTMLButtonElement;
     this.forceClaudeBtn = document.getElementById("force-claude-btn") as HTMLButtonElement;
     this.statusDot = document.getElementById("status-dot")!;
     this.statusLabel = document.getElementById("status-label")!;
     this.banner = document.getElementById("connection-banner")!;
+
+    this.voiceLabel = document.getElementById("voice-label")!;
+    this.voiceSub = document.getElementById("voice-sub")!;
+    this.muteLabel = document.getElementById("mute-label")!;
+    this.screenLabel = document.getElementById("screen-label")!;
+    this.screenStatus = document.getElementById("screen-status")!;
+    this.screenImg = document.getElementById("screen-frame") as HTMLImageElement;
+    this.screenPlaceholder = document.getElementById("screen-placeholder")!;
+    this.coreState = document.getElementById("core-state")!;
 
     this.readoutLink = document.getElementById("readout-link")!;
     this.readoutBackend = document.getElementById("readout-backend")!;
@@ -71,8 +110,12 @@ export class UI {
     });
     this.muteBtn.addEventListener("click", () => {
       this.muted = !this.muted;
-      this.muteBtn.textContent = this.muted ? "🔇" : "🔊";
+      this.renderMuteButton();
       this.onMuteToggle?.(this.muted);
+    });
+    this.screenBtn.addEventListener("click", () => {
+      this.setScreenFeedState(!this.screenFeedOn);
+      this.onScreenToggle?.(this.screenFeedOn);
     });
     this.stopBtn.addEventListener("click", () => {
       this.onStop?.();
@@ -89,6 +132,7 @@ export class UI {
     this.forceLocalBtn.addEventListener("click", () => this.trySend("/ollama "));
     this.forceClaudeBtn.addEventListener("click", () => this.trySend("/claude "));
     this.renderVoiceButton();
+    this.renderMuteButton();
   }
 
   private trySend(prefix = ""): void {
@@ -108,7 +152,7 @@ export class UI {
   }
 
   private updateInputEnabled(): void {
-    const disabled = this.awaitingReply || this.awaitingConfirm;
+    const disabled = this.awaitingReply || this.awaitingConfirm || !this.connected;
     this.input.disabled = disabled;
     this.sendBtn.disabled = disabled;
     this.forceLocalBtn.disabled = disabled;
@@ -117,21 +161,75 @@ export class UI {
 
   private renderVoiceButton(): void {
     if (this.voiceBusy) {
-      this.voiceBtn.textContent = this.voiceRunning ? "Stopping…" : "Starting…";
+      // Models load on a cold start, which takes tens of seconds — the
+      // button says so rather than looking like a dead control.
+      this.voiceLabel.textContent = this.voiceRunning ? "Stopping…" : "Starting…";
+      this.voiceSub.textContent = this.voiceRunning
+        ? "Shutting down"
+        : "Loading models";
+      this.voiceBtn.classList.add("busy");
       this.voiceBtn.disabled = true;
       this.wakeBtn.disabled = true;
       return;
     }
-    this.voiceBtn.disabled = false;
-    this.wakeBtn.disabled = false;
-    this.voiceBtn.textContent = this.voiceRunning ? "Stop Voice" : "Start Voice";
+    this.voiceBtn.classList.remove("busy");
+    this.voiceBtn.classList.toggle("live", this.voiceRunning);
+    this.voiceBtn.disabled = !this.connected;
+    this.wakeBtn.disabled = !this.connected;
+    this.voiceLabel.textContent = this.voiceRunning ? "Stop Voice" : "Start Voice";
+    this.voiceSub.textContent = this.voiceRunning ? "Loop online" : "Loop offline";
     this.voiceBtn.title = this.voiceRunning
       ? "Stop the always-on voice loop"
       : "Start the always-on voice loop";
-    this.wakeBtn.textContent = "Wake";
     this.wakeBtn.title = this.voiceRunning
       ? "Wake the voice loop and begin listening now"
       : "Start the voice loop, then wake it";
+  }
+
+  private renderMuteButton(): void {
+    this.muteBtn.classList.toggle("off", this.muted);
+    this.muteLabel.textContent = this.muted ? "Muted" : "Sound On";
+    this.muteBtn.title = this.muted
+      ? "Unmute spoken replies"
+      : "Mute spoken replies";
+  }
+
+  /** Live screen card. `enabled` reflects the bridge's actual capture
+   * state, so the button can't drift out of sync with what is really
+   * being captured (the config can veto it server-side). */
+  setScreenFeedState(enabled: boolean): void {
+    this.screenFeedOn = enabled;
+    this.screenBtn.classList.toggle("off", !enabled);
+    this.screenLabel.textContent = enabled ? "Screen On" : "Screen Off";
+    if (!enabled) {
+      this.screenStatus.textContent = "Off";
+      this.screenImg.removeAttribute("src");
+      this.screenImg.classList.remove("visible");
+      this.screenPlaceholder.textContent = "Screen feed off";
+      this.screenPlaceholder.classList.remove("error");
+    } else if (!this.screenImg.getAttribute("src")) {
+      this.screenStatus.textContent = "Standby";
+      this.screenPlaceholder.textContent = "Awaiting first capture…";
+    }
+  }
+
+  setScreenFrame(base64Jpeg: string): void {
+    // A frame already in flight when the feed is switched off would
+    // otherwise land afterwards and quietly flip the card back to "Live"
+    // — showing a capture taken after the user said stop.
+    if (!this.screenFeedOn) return;
+    this.screenImg.src = `data:image/jpeg;base64,${base64Jpeg}`;
+    this.screenImg.classList.add("visible");
+    this.screenPlaceholder.classList.remove("error");
+    this.screenStatus.textContent = "Live";
+  }
+
+  setScreenError(message: string): void {
+    this.screenImg.removeAttribute("src");
+    this.screenImg.classList.remove("visible");
+    this.screenStatus.textContent = "Blocked";
+    this.screenPlaceholder.textContent = message;
+    this.screenPlaceholder.classList.add("error");
   }
 
   appendUserMessage(text: string): void {
@@ -341,12 +439,31 @@ export class UI {
   setStatus(status: UIStatus): void {
     this.statusDot.className = status;
     this.statusLabel.textContent = STATUS_TEXT[status];
+    this.coreState.textContent = CORE_TEXT[status];
+    // Published on the root element so the whole HUD can shift with the
+    // state — ring tint, card accents, corner brackets — from one place
+    // instead of every component subscribing separately.
+    document.documentElement.dataset.status = status;
   }
 
   setConnectionState(connected: boolean): void {
     this.banner.classList.toggle("hidden", connected);
     this.banner.textContent = "Disconnected from JARVIS bridge — reconnecting…";
+    this.connected = connected;
     if (!connected) this.setStatus("offline");
+    // Every command in the rail is a message to the bridge, so with the
+    // socket down they can do nothing at all. Disabling them says that,
+    // instead of leaving buttons that look live and silently swallow the
+    // click.
+    this.wakeBtn.disabled = !connected;
+    this.stopBtn.disabled = !connected;
+    this.screenBtn.disabled = !connected;
+    // Mute included: the mute state lives on the bridge (cfg.tts_enabled),
+    // so toggling it with the socket down would change the button and
+    // nothing else.
+    this.muteBtn.disabled = !connected;
+    this.updateInputEnabled();
+    this.renderVoiceButton();
   }
 
   setVoiceState(running: boolean, busy = false): void {

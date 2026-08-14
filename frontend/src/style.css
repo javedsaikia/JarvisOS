@@ -127,6 +127,23 @@ body {
   z-index: 2;
 }
 
+/* Circular waveform around the core (voice-ring.ts). Sits between the orb
+   and the reticle, and is sized to match #hud-ring so the two are
+   concentric at every viewport size. */
+/* Deliberately larger than #hud-ring: the bars radiate from outside the
+   reticle's outermost arc, where they have room to read as a waveform.
+   Drawn inside the orb's radius they were simply swallowed by its bloom. */
+#voice-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(880px, 82vmin);
+  height: min(880px, 82vmin);
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
 /* ── Reticle ring system ─────────────────────────────────────────────── */
 
 #hud-ring {
@@ -372,9 +389,17 @@ body {
 }
 .viz-short { height: 34px; }
 
+.viz-caption {
+  padding: 2px 12px 6px;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .vision-frame {
   margin: 2px 12px 12px;
-  height: 176px;
+  height: 150px;
   position: relative;
   overflow: hidden;
   border: 1px solid rgba(0, 212, 255, 0.18);
@@ -409,12 +434,41 @@ body {
   z-index: 2;
 }
 
-.vision-video {
+/* Live screen capture pushed by the bridge (base64 JPEG every 2s). Fades
+   between frames so the card doesn't strobe on each update. */
+.screen-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: saturate(1.14) contrast(1.08) brightness(0.95);
+  object-position: top center;
   display: block;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  filter: saturate(1.1) contrast(1.05) brightness(0.92);
+}
+.screen-img.visible { opacity: 1; }
+
+.screen-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1.6;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  z-index: 1;
+}
+.screen-img.visible + .screen-placeholder { display: none; }
+.screen-placeholder.error {
+  color: var(--warn);
+  text-transform: none;
+  letter-spacing: 0.04em;
+  font-size: 9.5px;
 }
 
 .meter {
@@ -507,18 +561,191 @@ body {
   color: var(--text-dim);
 }
 
-/* ── Left rail ───────────────────────────────────────────────────────── */
+/* ── Left rail: the command column ───────────────────────────────────────
+   Controls live here rather than in a thin strip along the bottom: these
+   are the things reached mid-conversation, often from a few feet away, so
+   they get real size and a permanent home on the left edge where nothing
+   overlaps the core. The bottom bar keeps only the text input. */
 
 #left-rail {
   position: absolute;
-  top: 132px;
+  top: 120px;
   left: 24px;
-  bottom: 186px;
-  width: 252px;
+  bottom: 24px;
+  width: 296px;
   z-index: 6;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+#left-rail::-webkit-scrollbar { display: none; }
+
+#command-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.cmd-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.cmd-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Angled top-left corner — the cut-corner panel shape that reads as HUD
+   hardware rather than a web button. */
+.cmd {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px;
+  background: linear-gradient(150deg, rgba(0, 100, 175, 0.26), rgba(0, 30, 66, 0.55));
+  border: 1px solid var(--blue-dim);
+  border-radius: 4px;
+  clip-path: polygon(14px 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 0 100%, 0 14px);
+  color: var(--blue-bright);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.18s, box-shadow 0.18s, border-color 0.18s, transform 0.1s;
+}
+.cmd:hover:not(:disabled) {
+  background: linear-gradient(150deg, rgba(0, 140, 230, 0.38), rgba(0, 40, 88, 0.6));
+  border-color: var(--blue);
+  box-shadow: 0 0 18px rgba(0, 212, 255, 0.3), inset 0 0 20px rgba(0, 212, 255, 0.12);
+}
+.cmd:active:not(:disabled) { transform: translateY(1px); }
+.cmd:disabled { opacity: 0.32; cursor: default; }
+
+/* Scanning highlight that sweeps across on hover — the panel "energising"
+   rather than a flat colour change. */
+.cmd::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(169, 236, 255, 0.16) 50%, transparent 70%);
+  transform: translateX(-100%);
+  transition: transform 0.55s ease;
+  pointer-events: none;
+}
+.cmd:hover:not(:disabled)::after { transform: translateX(100%); }
+
+.cmd-icon {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px rgba(0, 212, 255, 0.5));
+}
+
+.cmd-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.cmd-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.cmd-sub {
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* Primary: the voice loop toggle, the one control that matters most. */
+.cmd-primary {
+  padding: 18px 16px;
+  border-color: var(--blue);
+  box-shadow: inset 0 0 24px rgba(0, 140, 220, 0.16);
+}
+.cmd-primary .cmd-icon { width: 28px; height: 28px; }
+.cmd-primary .cmd-label { font-size: 14px; }
+
+.cmd-led {
+  margin-left: auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
+  flex-shrink: 0;
+  transition: background 0.25s, box-shadow 0.25s;
+}
+.cmd-primary.live .cmd-led {
+  background: var(--teal);
+  box-shadow: 0 0 12px var(--teal);
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+.cmd-primary.live {
+  border-color: rgba(44, 232, 184, 0.55);
+  background: linear-gradient(150deg, rgba(0, 150, 130, 0.26), rgba(0, 40, 60, 0.6));
+  color: #b9fff0;
+}
+.cmd-primary.busy .cmd-led {
+  background: var(--warn);
+  box-shadow: 0 0 12px var(--warn);
+  animation: pulse-dot 0.8s ease-in-out infinite;
+}
+
+/* Small buttons stack icon over label so four fit two-up without
+   crowding. */
+.cmd-grid .cmd {
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  padding: 13px 6px;
+  text-align: center;
+}
+.cmd-grid .cmd-label { font-size: 9.5px; letter-spacing: 0.12em; }
+
+/* "Off" states: muted audio, screen feed disabled. Reads as a control
+   that's deliberately parked, not one that's broken or unavailable. */
+.cmd.off {
+  color: var(--text-dim);
+  border-color: var(--blue-faint);
+  background: linear-gradient(150deg, rgba(0, 40, 70, 0.35), rgba(0, 16, 34, 0.5));
+}
+.cmd.off .cmd-icon { filter: none; opacity: 0.8; }
+#mute-btn .mute-slash { display: none; }
+#mute-btn.off .mute-slash { display: inline; }
+#mute-btn.off .mute-waves { display: none; }
+
+#stop-btn:hover:not(:disabled) {
+  color: #ffd9dd;
+  border-color: rgba(255, 77, 94, 0.6);
+  box-shadow: 0 0 18px rgba(255, 77, 94, 0.28), inset 0 0 20px rgba(255, 77, 94, 0.12);
+}
+
+.cmd-wide {
+  flex: 1;
+  justify-content: center;
+  padding: 10px 8px;
+  background: rgba(0, 40, 80, 0.4);
+  border-color: var(--blue-faint);
+  color: var(--text-dim);
+}
+.cmd-wide .cmd-label { font-size: 9px; letter-spacing: 0.12em; }
+.cmd-wide:hover:not(:disabled) { color: var(--blue-bright); }
+#force-claude-btn:hover:not(:disabled) {
+  color: var(--magenta);
+  border-color: rgba(217, 70, 239, 0.5);
+  box-shadow: 0 0 16px rgba(217, 70, 239, 0.25);
 }
 
 /* ── Status dot ──────────────────────────────────────────────────────── */
@@ -711,6 +938,9 @@ body {
 
 /* ── Tier strip ──────────────────────────────────────────────────────── */
 
+/* Same width and centre line as the input bar below it, so the two read as
+   one bottom console — and, more practically, so it can never grow wide
+   enough to slide under the left rail the way a content-width strip did. */
 #tier-strip {
   position: absolute;
   bottom: 132px;
@@ -718,8 +948,10 @@ body {
   transform: translateX(-50%);
   z-index: 6;
   display: flex;
-  gap: 6px;
-  padding: 7px 10px;
+  justify-content: space-between;
+  width: min(640px, 88vw);
+  gap: 4px;
+  padding: 7px 8px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
   border-radius: 8px;
@@ -731,8 +963,9 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  width: 84px;
-  padding: 6px 4px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 2px;
   border-radius: 5px;
   color: var(--text-dim);
   transition: color 0.35s, background 0.35s, box-shadow 0.35s;
@@ -747,10 +980,13 @@ body {
   stroke-linejoin: round;
 }
 .tier span {
-  font-size: 8px;
-  letter-spacing: 0.1em;
+  font-size: 7.5px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .tier.active {
   color: var(--blue-bright);
@@ -798,11 +1034,8 @@ body {
 }
 #text-input:disabled { opacity: 0.45; }
 
-#send-btn,
-#mute-btn,
-#voice-btn,
-#wake-btn {
-  padding: 11px 20px;
+#send-btn {
+  padding: 11px 22px;
   background: linear-gradient(180deg, rgba(0, 212, 255, 0.2), rgba(0, 212, 255, 0.08));
   border: 1px solid var(--blue-dim);
   border-radius: 5px;
@@ -815,63 +1048,11 @@ body {
   text-transform: uppercase;
   transition: background 0.15s, box-shadow 0.15s;
 }
-#mute-btn { padding: 11px 13px; font-size: 15px; }
-#voice-btn {
-  min-width: 108px;
-  padding: 11px 15px;
-  font-size: 11px;
-}
-#wake-btn {
-  min-width: 82px;
-  padding: 11px 14px;
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-#send-btn:hover:not(:disabled),
-#mute-btn:hover:not(:disabled),
-#voice-btn:hover:not(:disabled),
-#wake-btn:hover:not(:disabled) {
+#send-btn:hover:not(:disabled) {
   background: linear-gradient(180deg, rgba(0, 212, 255, 0.34), rgba(0, 212, 255, 0.14));
   box-shadow: 0 0 16px rgba(0, 212, 255, 0.35);
 }
 #send-btn:disabled { opacity: 0.35; cursor: default; }
-#voice-btn:disabled { opacity: 0.55; cursor: progress; }
-#wake-btn:disabled { opacity: 0.55; cursor: pointer; }
-
-#force-controls {
-  position: absolute;
-  bottom: 98px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 6;
-  display: flex;
-  gap: 8px;
-}
-#force-controls button {
-  padding: 5px 14px;
-  background: rgba(0, 40, 80, 0.4);
-  border: 1px solid var(--blue-faint);
-  border-radius: 999px;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  transition: color 0.15s, border-color 0.15s, box-shadow 0.15s;
-}
-#force-controls button:hover:not(:disabled) {
-  color: var(--blue-bright);
-  border-color: var(--blue-dim);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.22);
-}
-#force-controls button:disabled { opacity: 0.35; cursor: default; }
-#force-claude-btn:hover:not(:disabled) {
-  color: var(--magenta);
-  border-color: rgba(217, 70, 239, 0.45);
-  box-shadow: 0 0 12px rgba(217, 70, 239, 0.25);
-}
 
 /* ── Connection banner ───────────────────────────────────────────────── */
 
@@ -892,17 +1073,53 @@ body {
 }
 #connection-banner.hidden { display: none; }
 
+.foot-value { margin-left: auto; }
+
+/* ── Status theming ──────────────────────────────────────────────────────
+   ui.setStatus() stamps the current state on <html>, so the whole HUD can
+   answer "what is JARVIS doing right now" at a glance from across the
+   room — the core caption, the level arc and the corner brackets all
+   shift together instead of only the small status dot changing. */
+
+html[data-status="speaking"] #ring-level-arc { stroke: var(--teal); filter: drop-shadow(0 0 6px var(--teal)); }
+html[data-status="thinking"] #ring-level-arc { stroke: var(--magenta); filter: drop-shadow(0 0 6px var(--magenta)); }
+html[data-status="error"] #ring-level-arc,
+html[data-status="offline"] #ring-level-arc { stroke: var(--red); filter: drop-shadow(0 0 6px var(--red)); }
+
+html[data-status="speaking"] .core-sub { color: var(--teal); animation: none; opacity: 1; }
+html[data-status="thinking"] .core-sub { color: var(--magenta); animation: soft-blink 1.1s ease-in-out infinite; }
+html[data-status="listening"] .core-sub { animation: soft-blink 1.8s ease-in-out infinite; }
+html[data-status="error"] .core-sub,
+html[data-status="offline"] .core-sub { color: var(--red); }
+
+html[data-status="speaking"] .hud-corner { border-color: var(--teal); filter: drop-shadow(0 0 6px rgba(44, 232, 184, 0.5)); }
+html[data-status="thinking"] .hud-corner { border-color: var(--magenta); filter: drop-shadow(0 0 6px rgba(217, 70, 239, 0.45)); }
+html[data-status="error"] .hud-corner,
+html[data-status="offline"] .hud-corner { border-color: var(--red); filter: drop-shadow(0 0 6px rgba(255, 77, 94, 0.45)); }
+
+/* The reticle spins a touch faster while thinking and speaking — the same
+   rings, just wound up, so the machine visibly "runs hotter" under load. */
+html[data-status="thinking"] .spin-cw { animation-duration: 24s; }
+html[data-status="thinking"] .spin-ccw { animation-duration: 38s; }
+html[data-status="speaking"] .spin-cw { animation-duration: 34s; }
+html[data-status="speaking"] .spin-ccw { animation-duration: 52s; }
+
 /* ── Responsive ──────────────────────────────────────────────────────── */
 
+/* The left rail holds the controls now, so it can never be hidden the way
+   the old telemetry-only rail was — the cards go first, the commands stay. */
 @media (max-width: 1180px) {
-  #left-rail { display: none; }
   .data-stream { display: none; }
+  #left-rail { width: 250px; bottom: 20px; }
+  #status-card, #screen-card { display: none; }
 }
 
 @media (max-width: 860px) {
   #tier-strip { display: none; }
-  #right-rail { width: 88vw; right: 6vw; }
-  #transcript-panel { width: 88vw; right: 6vw; top: 196px; bottom: 150px; }
+  #left-rail { width: 210px; top: 104px; }
+  #right-rail { width: calc(100vw - 260px); right: 16px; }
+  #transcript-panel { width: calc(100vw - 260px); right: 16px; top: 196px; bottom: 96px; }
+  #controls { width: calc(100vw - 260px); left: auto; right: 16px; transform: none; }
   .wordmark { font-size: 38px; }
-  .vision-frame { height: 152px; }
+  .cmd-primary { padding: 14px 12px; }
 }

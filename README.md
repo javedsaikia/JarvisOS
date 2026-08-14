@@ -36,8 +36,10 @@ the next if it doesn't match:
 3. **Claude Code** — only for requests that are clearly multi-file
    coding/agentic work, and only after you confirm the handoff
 
-Every reply is labeled with what answered it: `[Ollama]`, `[Calendar]`,
-`[Notes]`, `[Files]`, `[Shell]`, or `[Claude Code]`.
+Every reply is labeled with what answered it: `[JARVIS]` (the local model),
+`[Calendar]`, `[Notes]`, `[Files]`, `[Shell]`, or `[Claude Code]`. The local
+model is labeled by what it is to you rather than by the runtime serving it —
+naming Ollama in the transcript read like a second assistant had replied.
 
 **Project layout:**
 
@@ -99,6 +101,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `voice_silence_rms_threshold` — mic energy level below which the voice loop considers you done talking; raise it in a noisy room, lower it if it cuts you off early
 - `vision_enabled` — set `false` to fully disable screen understanding (default `true`)
 - `vision_ollama_model` — local Ollama vision model for `describe_screen()` (default `"moondream"`, `ollama pull moondream` first)
+- `screen_feed_enabled` — the web UI's live Screen Feed card, which screenshots this Mac every 2s while a tab is open; set `false` to disable it regardless of the UI's own toggle (default `true`)
 - `browser_enabled` — set `false` to fully disable browser control (default `true`)
 - `location_enabled` — set `false` to fully disable weather/nearby-places/Maps (default `true`)
 - `location_default_radius_m` — search radius for nearby-places lookups, in meters (default `3000`)
@@ -535,7 +538,7 @@ of anything:
   bridge calls `cli.process_turn(text, cfg, mem, interactive=True, confirm_fn=...)`
   in a worker thread (it's synchronous — blocking network/subprocess calls,
   same as the CLI) → sends back `{"type": "reply", "label": cli.label(backend), "text": response}`.
-  The label shown is *always* `cli.label()`'s actual output — Ollama,
+  The label shown is *always* `cli.label()`'s actual output — JARVIS,
   Calendar, Notes, Files, Shell, Claude Code — never reimplemented or
   guessed at in the frontend.
 - **Confirmations are not bypassed**: when `process_turn` needs to confirm
@@ -571,8 +574,21 @@ of anything:
 Electric-blue holographic HUD modelled on the classic JARVIS interface
 look: a compact glowing core inside a layered SVG reticle (tick ring,
 segmented arcs, dashed ring, node dots, corner brackets — each rotating at
-a different rate), telemetry cards down the left, comms log right, and a
-routing-tier icon strip along the bottom.
+a different rate), a large command rail down the left, comms log right,
+and a routing-tier icon strip along the bottom.
+
+**Controls live in the left rail**, not in a strip under the input: these
+are reached mid-conversation, often from across the room, so they get real
+size and a fixed position — a primary voice-loop toggle with its own state
+LED, then Wake / Mute / Stop / Screen, then the two routing overrides. The
+bottom bar keeps only the text input and Send.
+
+**The core shows what state JARVIS is in.** `ui.setStatus()` stamps the
+state on `<html>`, and the whole HUD answers to it at once: the core
+caption (LISTENING / PROCESSING / SPEAKING / LINK LOST), the orb colour,
+the level arc, the corner brackets, and the reticle's rotation speed. The
+orb itself deforms with a ripple whose rate follows the audio, so a
+speaking orb reads as speaking rather than merely brighter.
 
 **Every readout is bound to real data** — the reference material for this
 design is a marketing poster with mocked-up panels (lights, temperature,
@@ -581,19 +597,49 @@ security), and none of that was reproduced, because we have no such data:
 | Element | Source |
 |---|---|
 | System Status oscilloscope | live `AnalyserNode` time-domain data (real TTS audio) |
-| Output Spectrum bars | live `AnalyserNode` frequency data |
-| Level History | rolling history of measured output amplitude |
+| Output Spectrum bars | live `AnalyserNode` frequency data, or measured level-over-time while the voice loop is speaking (the caption says which) |
+| Circular waveform around the core | the last ~1.5s of measured amplitude, one bar per frame |
 | Audio Out meter + ring level arc | same real amplitude that drives the orb |
-| Status dot / label | real pipeline state (idle/thinking/speaking/error) |
+| Status dot / label / core caption | real pipeline state (idle/thinking/speaking/error) |
 | Comms Log label + backend chip | `cli.label()` output, verbatim |
 | Routing-tier strip highlight | lights the tier matching the real backend that answered |
 | Session / Messages | real elapsed time and real sent-message count |
+| Screen Feed | a real `screencapture` of this Mac, every 2s (see below) |
 
 When nothing is playing, the visualizers render a **flat "no signal"
 baseline** rather than idle noise — they never imply audio that isn't
 there. The only purely decorative elements are the background grid,
 vignette, scanline sweep, and the two scrolling hex columns at the screen
 edges; all are `aria-hidden` and none are presented as data.
+
+A "Vision Feed" card used to loop a canned video clip labelled *Live
+Clip*. It was the one element on screen pretending to be telemetry, and it
+is gone: the card now shows a real screenshot of this Mac.
+
+**The orb moves with spoken replies too.** Voice-loop audio is played by
+`afplay` on the Mac's speakers and never reaches the browser, so the
+`AnalyserNode` has nothing to read and the orb used to sit still through
+every spoken turn — the main way this thing is used. `jarvis/voice_events.py`
+measures the RMS envelope of the exact WAV about to be played and
+publishes it as JSONL; the bridge tails that file and forwards it, and
+`envelope-player.ts` replays it against the browser's clock. The motion is
+therefore the real speech, just measured in another process. Gain is set
+from measurements of real Piper output (mean 0.46 / p90 0.76, nothing
+clipped) rather than picked by eye.
+
+**Screen Feed** is `screencapture` + `sips` (macOS's own tools, same
+choice as the screen tool) downscaled to a ~40KB JPEG and pushed every 2s.
+It only captures while a browser tab is actually connected *and* the feed
+is switched on, the card's button toggles it live, and
+`screen_feed_enabled: false` in config disables it outright. Without
+Screen Recording permission the card says so and the loop stops rather
+than retrying forever.
+
+**Stop stops both halves.** The Stop button used to call `audio.stop()`,
+which silences WebAudio playback in the tab and does exactly nothing to a
+spoken reply coming out of the speakers. It now also sends
+`{"type": "voice_interrupt"}`, which the bridge turns into `SIGUSR2` to
+the voice loop — the same interrupt path push-to-talk uses.
 
 ### Scope / limitations (v1)
 

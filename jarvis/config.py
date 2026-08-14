@@ -44,6 +44,11 @@ DEFAULTS = {
     # exchange, with no wake word required to re-arm it.
     "voice_conversation_window_seconds": 25,
     "vision_enabled": True,
+    # Live screen card in the web UI (bridge._screen_feed_loop). Real
+    # screenshots of your desktop, pushed to the browser every 2s while a
+    # tab is open — set false to disable it outright, regardless of the
+    # UI's own toggle.
+    "screen_feed_enabled": True,
     "vision_ollama_model": "moondream",
     "browser_enabled": True,
     "location_enabled": True,

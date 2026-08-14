@@ -27,7 +27,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from jarvis import cli, hotkey, sarvam_client
+from jarvis import cli, hotkey, sarvam_client, voice_events
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.tools import spotify
@@ -421,6 +421,19 @@ class VoiceLoop:
     def trigger_wake(self) -> None:
         self.wake_event.set()
 
+    def trigger_interrupt(self) -> None:
+        """Stop talking / stop working, from outside this process.
+
+        Exactly what the push-to-talk key does (see _on_push_to_talk),
+        reached instead by SIGUSR2 from the bridge so the web UI's Stop
+        button is a real stop. It used to only silence audio inside the
+        browser tab, which does nothing at all for a spoken turn — that
+        audio is playing out of the Mac's speakers via afplay, and no
+        amount of stopping a WebAudio node touches it.
+        """
+        self._ptt_interrupt = True
+        self.trigger_wake()
+
     def _on_push_to_talk(self) -> None:
         """Hotkey pressed: start a turn immediately, wherever we were.
 
@@ -764,7 +777,12 @@ class VoiceLoop:
                     playback_active.set()
                     first = False
                     self._last_ttfa = time.perf_counter() - started_at
+                # Published for the web UI's orb, which otherwise has no
+                # signal at all for a spoken turn — this audio goes to the
+                # Mac's speakers, never to the browser. See voice_events.
+                voice_events.speaking(wav_bytes)
                 if not cli.tts.play(wav_bytes, stop_event=barge_event):
+                    voice_events.speaking_stopped()
                     return False
         finally:
             # THE source of self-echo, and it was never a text problem.
@@ -823,6 +841,7 @@ class VoiceLoop:
         if self.cfg.get("tts_enabled"):
             try:
                 wav_bytes = sarvam_client.text_to_speech(prompt + " Say yes or no.", language_code="en-IN")
+                voice_events.speaking(wav_bytes)
                 cli.tts.play(wav_bytes)
             except sarvam_client.SarvamError as e:
                 print(f"(Sarvam TTS unavailable: {e})")
@@ -1218,7 +1237,15 @@ def main():
         else:
             active_loop.trigger_wake()
 
+    def _handle_interrupt_signal(signum, frame):
+        # No pending-interrupt equivalent to pending_wake: there is
+        # nothing to interrupt before the loop exists, and queueing a
+        # stop until after startup would silence the first real reply.
+        if active_loop is not None:
+            active_loop.trigger_interrupt()
+
     signal.signal(signal.SIGUSR1, _handle_wake_signal)
+    signal.signal(signal.SIGUSR2, _handle_interrupt_signal)
     try:
         loop = VoiceLoop(cfg)
         active_loop = loop
