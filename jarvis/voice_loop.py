@@ -767,6 +767,9 @@ class VoiceLoop:
         mem = MemoryStore()
         wake_phrase = self.wake_word.replace("_", " ").title()
         first_start = True
+        # Chosen explicitly rather than left to sd.default.device, which
+        # goes stale the moment a microphone is plugged in or removed.
+        self._input_device = self._select_input_device()
         while True:
             self._last_frame_at = time.monotonic()
             try:
@@ -776,6 +779,7 @@ class VoiceLoop:
                     dtype="int16",
                     blocksize=FRAME_SAMPLES,
                     callback=self._audio_callback,
+                    device=self._input_device,
                 ):
                     self._drain_queue()
                     self.calibrate()
@@ -800,6 +804,51 @@ class VoiceLoop:
                 print("Stopping voice loop on request.")
                 return
 
+    def _select_input_device(self) -> int | None:
+        """Pick an input device that actually delivers audio.
+
+        sd.default.device materializes an integer index the first time it
+        is read and then never tracks devices appearing or disappearing.
+        The loop started with no EarPods connected, cached that index, and
+        after they were plugged in and removed the same index pointed at
+        something that returned pure silence — it then reported itself
+        "listening on MacBook Pro Microphone" 714 times while being deaf.
+        So: ask the host API for the CURRENT default, and verify the device
+        really produces samples before committing to it, falling back to
+        any other input that does.
+        """
+        candidates: list[int] = []
+        try:
+            hostapi = sd.query_hostapis(sd.default.hostapi)
+            idx = hostapi.get("default_input_device", -1)
+            if idx is not None and idx >= 0:
+                candidates.append(idx)
+        except Exception:
+            pass
+        try:
+            for i, dev in enumerate(sd.query_devices()):
+                if dev.get("max_input_channels", 0) > 0 and i not in candidates:
+                    candidates.append(i)
+        except Exception:
+            pass
+
+        for idx in candidates:
+            try:
+                name = sd.query_devices(idx)["name"]
+                probe = sd.rec(
+                    int(0.3 * SAMPLE_RATE), samplerate=SAMPLE_RATE,
+                    channels=1, dtype="int16", device=idx,
+                )
+                sd.wait()
+                if int(np.abs(probe).max()) > 0:
+                    print(f"  input device: {name}")
+                    return idx
+                print(f"  skipping {name} — delivering pure silence")
+            except Exception as e:
+                print(f"  skipping device {idx} — {type(e).__name__}")
+        print("  (no input device produced audio; falling back to the system default)")
+        return None
+
     def _reinit_audio(self) -> None:
         """Re-enumerate audio devices after a stream failure.
 
@@ -821,11 +870,7 @@ class VoiceLoop:
         # Small pause so a device that is genuinely mid-transition (or
         # permanently gone) can't spin this into a hot retry loop.
         time.sleep(1.0)
-        try:
-            device = sd.query_devices(sd.default.device[0])
-            print(f"  now listening on: {device['name']}\n")
-        except Exception:
-            print("  (no usable input device found; will keep retrying)\n")
+        self._input_device = self._select_input_device()
 
     def _conversation_loop(self, mem: MemoryStore) -> None:
         last_reply_text = ""
