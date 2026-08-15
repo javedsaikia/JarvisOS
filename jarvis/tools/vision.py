@@ -28,7 +28,7 @@ import time
 import urllib.error
 import urllib.request
 
-from jarvis import env, ollama_client, screen_capture, voice_events
+from jarvis import env, llm, screen_capture, voice_events
 
 DEFAULT_QUESTION = "Describe what's on the screen in 2-4 clear, concise sentences."
 
@@ -182,7 +182,12 @@ def _ask_about_text(lines: list[dict], meta: dict, question: str, cfg: dict) -> 
     integration that doesn't exist), which is why the generic question is
     answered by _summarize_screen instead and never reaches this.
     """
-    model = cfg.get("screen_text_model") or cfg.get("voice_ollama_model") or cfg["ollama_model"]
+    # screen_text_model still pins a specific local model when set;
+    # otherwise the dashboard's "screen" role decides.
+    pinned = cfg.get("screen_text_model")
+    entry = llm.resolve(cfg, "screen")
+    if pinned:
+        entry = {**entry, "provider": "ollama", "model": pinned, "label": f"Orin · {pinned}"}
     # OCR of a dense screen can run long; the local model's context is the
     # limit, and the top of the reading order is where the meaningful
     # content is.
@@ -203,15 +208,14 @@ def _ask_about_text(lines: list[dict], meta: dict, question: str, cfg: dict) -> 
         "guessing. No lists, no bullet points, no code blocks."
     )
     try:
-        return ollama_client.chat(
+        return llm.chat(
             [{"role": "user", "content": prompt}],
-            model,
-            cfg["ollama_host"],
-            keep_alive=cfg.get("ollama_keep_alive"),
+            entry,
+            cfg,
             options={"num_predict": cfg.get("screen_max_tokens", 220)},
         ).strip()
-    except ollama_client.OllamaError as e:
-        raise VisionError(f"Could not reach the local model to describe the screen: {e}") from e
+    except llm.LLMError as e:
+        raise VisionError(f"Could not reach {entry['label']} to describe the screen: {e}") from e
 
 
 def _ask_cloud_vision(jpeg_bytes: bytes, prompt: str, cfg: dict) -> str:

@@ -48,6 +48,8 @@ export class UI {
   private screenImg: HTMLImageElement;
   private screenPlaceholder: HTMLElement;
   private coreState: HTMLElement;
+  private modelRoles: HTMLElement;
+  private modelsStatus: HTMLElement;
 
   // HUD readout panel — purely additive, independent of status-dot/statusLabel above.
   private readoutLink: HTMLElement;
@@ -72,6 +74,7 @@ export class UI {
   onVoiceToggle: ((running: boolean) => void) | null = null;
   onWake: (() => void) | null = null;
   onScreenToggle: ((enabled: boolean) => void) | null = null;
+  onModelChange: ((role: string, model: string) => void) | null = null;
 
   constructor() {
     this.transcript = document.getElementById("transcript")!;
@@ -96,6 +99,8 @@ export class UI {
     this.screenImg = document.getElementById("screen-frame") as HTMLImageElement;
     this.screenPlaceholder = document.getElementById("screen-placeholder")!;
     this.coreState = document.getElementById("core-state")!;
+    this.modelRoles = document.getElementById("model-roles")!;
+    this.modelsStatus = document.getElementById("models-status")!;
 
     this.readoutLink = document.getElementById("readout-link")!;
     this.readoutBackend = document.getElementById("readout-backend")!;
@@ -211,6 +216,59 @@ export class UI {
       this.screenStatus.textContent = "Standby";
       this.screenPlaceholder.textContent = "Awaiting first capture…";
     }
+  }
+
+  /** Render the model picker from the bridge's catalog.
+   *
+   * One row per role, because "which model" is not one choice: the spoken
+   * loop wants the fastest thing available and a typed question usually
+   * wants the best one. Models whose API key is missing stay visible but
+   * disabled, with the key name shown — a picker that silently hides an
+   * option gives no clue what to do about it.
+   */
+  setModels(
+    models: {
+      id: string; label: string; local: boolean; available: boolean; needs_key: string;
+    }[],
+    roles: Record<string, string>,
+    roleLabels: Record<string, string>
+  ): void {
+    this.modelRoles.replaceChildren();
+
+    for (const [role, description] of Object.entries(roleLabels)) {
+      const row = document.createElement("label");
+      row.className = "model-row";
+      row.title = description;
+
+      const name = document.createElement("span");
+      name.className = "model-role";
+      name.textContent = role;
+
+      const select = document.createElement("select");
+      select.className = "model-select";
+      for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = model.available
+          ? model.label
+          : `${model.label} — needs ${model.needs_key}`;
+        option.disabled = !model.available;
+        option.selected = roles[role] === model.id;
+        select.appendChild(option);
+      }
+      select.addEventListener("change", () => this.onModelChange?.(role, select.value));
+
+      row.appendChild(name);
+      row.appendChild(select);
+      this.modelRoles.appendChild(row);
+    }
+
+    const chosen = models.filter((m) => Object.values(roles).includes(m.id));
+    const cloud = chosen.filter((m) => !m.local);
+    this.modelsStatus.textContent = cloud.length
+      ? [...new Set(cloud.map((m) => m.label.split(" ")[0]))].join(" + ")
+      : "Local";
+    this.modelsStatus.classList.toggle("cloud", cloud.length > 0);
   }
 
   /** Blank the HUD while the backend screenshots the desktop.

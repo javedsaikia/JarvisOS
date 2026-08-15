@@ -582,6 +582,11 @@ body {
 }
 #left-rail::-webkit-scrollbar { display: none; }
 
+/* Cards keep their natural height and the rail scrolls instead. Without
+   this, flex shrinks them to fit and .hud-card's overflow:hidden silently
+   clips the bottom off — the Models card lost a whole row that way. */
+#left-rail > .hud-card { flex-shrink: 0; }
+
 #command-rail {
   display: flex;
   flex-direction: column;
@@ -1156,3 +1161,58 @@ html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
   .wordmark { font-size: 38px; }
   .cmd-primary { padding: 14px 12px; }
 }
+
+/* ── Model picker ────────────────────────────────────────────────────────
+   Which model answers is a live setting, so it lives in the rail next to
+   the other controls rather than in a config file the user has to find.
+   One row per role: the spoken loop wants the fastest model available, a
+   typed question usually wants the best one. */
+
+#model-roles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 12px 12px;
+}
+
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.model-role {
+  flex-shrink: 0;
+  width: 46px;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.model-select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  background: rgba(0, 40, 80, 0.5);
+  border: 1px solid var(--blue-faint);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.model-select:hover,
+.model-select:focus {
+  border-color: var(--blue);
+  box-shadow: 0 0 10px rgba(0, 212, 255, 0.22);
+}
+.model-select option:disabled { color: var(--text-dim); }
+
+/* Anything not running locally is worth noticing at a glance: it is the
+   difference between free and metered. */
+#models-status.cloud { color: var(--warn); text-shadow: 0 0 8px rgba(255, 176, 32, 0.4); }

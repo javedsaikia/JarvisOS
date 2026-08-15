@@ -151,6 +151,10 @@ socket.onMessage((msg: ServerMessage) => {
       ui.setScreenFeedState(msg.enabled);
       break;
     }
+    case "models_state": {
+      ui.setModels(msg.models, msg.roles, msg.role_labels);
+      break;
+    }
     case "screen_capture": {
       ui.setCapturing(msg.phase === "start");
       break;
@@ -206,6 +210,7 @@ ui.onWake = () => {
   socket.wakeVoice();
 };
 ui.onScreenToggle = (enabled) => socket.setScreenFeed(enabled);
+ui.onModelChange = (role, model) => socket.setModel(role, model);
 
 // Real elapsed session time since page load.
 const sessionStart = performance.now();

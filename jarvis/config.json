@@ -26,5 +26,10 @@
   "push_to_talk_combo": [
     "ctrl",
     "alt"
-  ]
+  ],
+  "model_roles": {
+    "chat": "local",
+    "voice": "local-fast",
+    "screen": "local-fast"
+  }
 }

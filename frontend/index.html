@@ -131,6 +131,16 @@
           </div>
         </nav>
 
+        <section class="hud-card" id="models-card">
+          <div class="card-head">
+            <span>Models</span>
+            <span id="models-status" class="card-value">Local</span>
+          </div>
+          <!-- Filled by ui.ts from the bridge's models_state: one row per
+               role, each a picker over the configured catalog. -->
+          <div id="model-roles"></div>
+        </section>
+
         <section class="hud-card" id="status-card">
           <div class="card-head">
             <span>System Status</span>

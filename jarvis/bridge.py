@@ -31,8 +31,8 @@ from pathlib import Path
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from jarvis import cli, tts, voice_events
-from jarvis.config import load_config
+from jarvis import cli, llm, tts, voice_events
+from jarvis.config import load_config, update_config
 from jarvis.memory import LOG_PATH, MemoryStore
 from jarvis import screen_capture
 from jarvis.tools import spotify
@@ -384,6 +384,48 @@ async def _handle_message(ws, loop: asyncio.AbstractEventLoop, confirm: WSConfir
             pass
 
 
+def _models_payload() -> dict:
+    """The model catalog plus the current per-role assignment.
+
+    Sent on connect and after every change, so the dashboard always shows
+    what is actually answering rather than what it last asked for.
+    """
+    with _cfg_lock:
+        snapshot = dict(cfg)
+    return {
+        "type": "models_state",
+        "models": llm.catalog(snapshot),
+        "roles": {role: llm.resolve(snapshot, role)["id"] for role in llm.ROLES},
+        "role_labels": llm.ROLES,
+    }
+
+
+def _set_model_role(role: str, model_id: str) -> bool:
+    """Assign a model to a role and persist it.
+
+    Written to config.json rather than held in memory: a model choice is a
+    preference, and having it silently revert on the next restart is the
+    kind of thing that makes a dashboard feel fake.
+    """
+    if role not in llm.ROLES:
+        return False
+    with _cfg_lock:
+        known = {m["id"] for m in llm.catalog(cfg)}
+        if model_id not in known:
+            return False
+        roles = dict(cfg.get("model_roles") or {})
+        roles[role] = model_id
+        cfg["model_roles"] = roles
+        # Only this key is written; the rest of config.json is left as the
+        # user wrote it (see config.update_config).
+        try:
+            update_config(model_roles=roles)
+        except OSError:
+            return False
+    print(f"[models] {role} -> {model_id}", flush=True)
+    return True
+
+
 async def _send_voice_state(ws) -> None:
     await ws.send(json.dumps({
         "type": "voice_state",
@@ -637,6 +679,7 @@ async def handle_connection(ws) -> None:
             "type": "screen_feed_state",
             "enabled": feed_allowed and _screen_feed_on.is_set(),
         }))
+        await ws.send(json.dumps(_models_payload()))
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -672,6 +715,15 @@ async def handle_connection(ws) -> None:
                 with _cfg_lock:
                     cfg["tts_enabled"] = True
                 await ws.send(json.dumps({"type": "muted", "enabled": True}))
+
+            elif mtype == "set_model":
+                if _set_model_role(msg.get("role", ""), msg.get("model", "")):
+                    await _broadcast(json.dumps(_models_payload()))
+                else:
+                    await ws.send(json.dumps({
+                        "type": "error",
+                        "message": "That model can't be selected — check the API key in jarvis/.env.",
+                    }))
 
             elif mtype == "screen_feed":
                 enabled = bool(msg.get("enabled"))

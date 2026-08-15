@@ -11,6 +11,7 @@ from typing import Callable
 from jarvis import claude_handoff, location_client, maps_client, ollama_client, router, sarvam_client, tts
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
+from jarvis import llm
 from jarvis.persona import build_system_prompt
 from jarvis.tools import browser, calendar, calling, files, location, notes, parsing, registry, shell, spotify, vision
 
@@ -62,6 +63,8 @@ def handle_ollama(
     model_override: str | None = None,
     ollama_options: dict | None = None,
     stream_callback: Callable[[str], None] | None = None,
+    model_role: str = "chat",
+    used_entry: dict | None = None,
 ) -> str:
     system_prompt = build_system_prompt(cfg["user_name"], mem.load_facts())
     messages = [{"role": "system", "content": system_prompt}]
@@ -73,30 +76,43 @@ def handle_ollama(
         messages.append({"role": role, "content": turn["content"]})
     messages.append({"role": "user", "content": user_text})
 
-    try:
-        model = model_override or cfg["ollama_model"]
-        keep_alive = cfg.get("ollama_keep_alive")
-        if stream_callback is None:
-            return ollama_client.chat(
-                messages, model, cfg["ollama_host"], options=ollama_options, keep_alive=keep_alive
-            )
+    # Which model answers is a per-role assignment the user makes in the
+    # dashboard (see jarvis/llm.py). model_override still wins, so
+    # /ollama and the voice loop's own smaller-model setting behave as
+    # they always did.
+    entry = llm.resolve(cfg, model_role)
+    if model_override:
+        entry = {**entry, "provider": "ollama", "model": model_override, "local": True}
 
-        chunks: list[str] = []
-        for chunk in ollama_client.chat_stream(
-            messages, model, cfg["ollama_host"], options=ollama_options, keep_alive=keep_alive
-        ):
-            piece = ""
-            message = chunk.get("message")
-            if isinstance(message, dict):
-                piece = message.get("content") or ""
-            if not piece:
-                piece = chunk.get("response") or ""
-            if piece:
-                chunks.append(piece)
-                stream_callback(piece)
-        return "".join(chunks).strip()
-    except ollama_client.OllamaError as e:
-        return f"(Ollama unavailable: {e})"
+    # Reports which model *actually* answered, which is not always the one
+    # selected: a cloud model can fail and fall back below. Labelling the
+    # reply with the selected model in that case would credit an answer to
+    # something that never ran.
+    if used_entry is not None:
+        used_entry.clear()
+        used_entry.update(entry)
+
+    try:
+        return llm.chat(
+            messages, entry, cfg, options=ollama_options, stream_callback=stream_callback
+        )
+    except llm.LLMError as e:
+        if entry["provider"] == "ollama":
+            return f"(Ollama unavailable: {e})"
+        # A cloud model that fails should not end the turn — fall back to
+        # the local one that is always there, and say so, rather than
+        # handing back an error where an answer was expected.
+        print(f"({entry['label']} failed: {e} — falling back to the local model.)", flush=True)
+        local = llm.resolve({**cfg, "model_roles": {}}, model_role)
+        if used_entry is not None:
+            used_entry.clear()
+            used_entry.update(local)
+        try:
+            return llm.chat(
+                messages, local, cfg, options=ollama_options, stream_callback=stream_callback
+            )
+        except llm.LLMError as local_error:
+            return f"({entry['label']} failed: {e}; local fallback also failed: {local_error})"
 
 
 def handle_sarvam(
@@ -684,6 +700,7 @@ def process_turn(
     confirm_fn=text_confirm,
     recent_turns_limit: int = 12,
     model_override: str | None = None,
+    model_role: str = "chat",
     ollama_options: dict | None = None,
     stream_callback: Callable[[str], None] | None = None,
     source: str = "text",
@@ -727,6 +744,10 @@ def process_turn(
         if backend == "claude_code":
             response = handle_claude_code(clean_text, cfg, interactive, confirm_fn)
         else:
+            # The backend recorded for this turn names the model that
+            # actually answered, so the transcript label and the memory
+            # log both say Groq/Gemini/Orin rather than always "ollama".
+            used: dict = {}
             response = handle_ollama(
                 clean_text,
                 cfg,
@@ -735,7 +756,11 @@ def process_turn(
                 model_override=model_override,
                 ollama_options=ollama_options,
                 stream_callback=stream_callback,
+                model_role=model_role,
+                used_entry=used,
             )
+            if used and not model_override:
+                backend = llm.backend_name(used)
 
     mem.log_turn("user", clean_text, backend, source=source)
     mem.log_turn("assistant", response, backend, source=source)
@@ -769,6 +794,13 @@ def label(backend: str) -> str:
         return "[Sarvam Hindi]"
     if backend == "sarvam:as-IN":
         return "[Sarvam Assamese]"
+    # Cloud models answer as themselves: if a reply came from Groq or
+    # Gemini, the transcript says so. Which model is answering is a
+    # setting the user changes, so it has to be visible in the reply.
+    if backend.startswith("groq:"):
+        return "[Groq]"
+    if backend.startswith("gemini:"):
+        return "[Gemini]"
     # The local model is Orin itself as far as anyone using this is
     # concerned — "Ollama" is the runtime it happens to be served by, and
     # naming the plumbing in the transcript reads like a different

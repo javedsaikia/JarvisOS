@@ -14,6 +14,26 @@ DEFAULTS = {
     "bridge_ollama_model": "qwen2.5-coder:1.5b",
     "bridge_ollama_max_tokens": 400,
     "ollama_keep_alive": "30m",
+    # Models the dashboard offers, and which one answers for each job.
+    # Cloud entries need their key in jarvis/.env (GROQ_API_KEY,
+    # GEMINI_API_KEY) — without it they still appear, marked unavailable,
+    # so it is obvious why one can't be picked. Roles are assigned in the
+    # web UI; see jarvis/llm.py.
+    "models": [
+        {"id": "local-fast", "provider": "ollama", "model": "qwen2.5:1.5b",
+         "label": "Local · Qwen 1.5B"},
+        {"id": "local", "provider": "ollama", "model": "qwen2.5-coder:7b",
+         "label": "Local · Qwen Coder 7B"},
+        {"id": "groq-8b", "provider": "groq", "model": "llama-3.1-8b-instant",
+         "label": "Groq · Llama 3.1 8B"},
+        {"id": "groq-70b", "provider": "groq", "model": "llama-3.3-70b-versatile",
+         "label": "Groq · Llama 3.3 70B"},
+        {"id": "gemini-flash", "provider": "gemini", "model": "gemini-2.0-flash",
+         "label": "Gemini · 2.0 Flash"},
+    ],
+    # Defaults stay local, so nothing starts costing money on its own —
+    # a cloud model is used only for a role you assign it to.
+    "model_roles": {"chat": "local", "voice": "local-fast", "screen": "local-fast"},
     "claude_code_enabled": True,
     "claude_code_command": "claude",
     "claude_code_confirm": True,
@@ -74,9 +94,10 @@ DEFAULTS = {
     # primary path and the vision model is the fallback for screens with
     # no text on them.
     "screen_ocr_enabled": True,
-    # Answers about screen text. Small and fast beats clever here: this
-    # runs on every "what's on my screen", including spoken ones.
-    "screen_text_model": "qwen2.5:1.5b",
+    # Pins a specific local model for screen questions. Empty (the
+    # default) means the dashboard's "screen" role decides, which is
+    # where this is meant to be changed now.
+    "screen_text_model": "",
     "screen_max_tokens": 220,
     # Window title marked as Orin's own and left out of the capture, so
     # the HUD is never what Orin describes.
@@ -111,3 +132,21 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2))
+
+
+def update_config(**changes) -> None:
+    """Change specific settings on disk, leaving the rest of the file alone.
+
+    Deliberately not save_config(load_config()): that writes the *merged*
+    config, freezing today's defaults into the user's file, so every later
+    improvement to a default would silently never reach them. This touches
+    only the keys it was given.
+    """
+    current = {}
+    if CONFIG_PATH.exists():
+        try:
+            current = json.loads(CONFIG_PATH.read_text())
+        except json.JSONDecodeError:
+            current = {}
+    current.update(changes)
+    CONFIG_PATH.write_text(json.dumps(current, indent=2))

@@ -23,6 +23,18 @@ export type ServerMessage =
   // arrives on the fallback capture path; normally the HUD's window is
   // composited out natively and the UI never hears about it.
   | { type: "screen_capture"; phase: "start" | "end" }
+  // The model catalog and which model answers for each job. Sent on
+  // connect and after every change, so the picker can't drift from what
+  // is actually running.
+  | {
+      type: "models_state";
+      models: {
+        id: string; provider: string; model: string; label: string;
+        local: boolean; available: boolean; needs_key: string;
+      }[];
+      roles: Record<string, string>;
+      role_labels: Record<string, string>;
+    }
   | {
       type: "spotify_state";
       active: boolean;
@@ -120,6 +132,10 @@ export class OrinSocket {
    * playback is stopped locally (audio.stop()); this is the other half. */
   interruptVoice(): void {
     this.send({ type: "voice_interrupt" });
+  }
+
+  setModel(role: string, model: string): void {
+    this.send({ type: "set_model", role, model });
   }
 
   setScreenFeed(enabled: boolean): void {

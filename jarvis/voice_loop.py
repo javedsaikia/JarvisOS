@@ -28,7 +28,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from jarvis import cli, hotkey, sarvam_client, voice_events, wake_phrase
+from jarvis import cli, hotkey, llm, sarvam_client, voice_events, wake_phrase
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.tools import spotify
@@ -635,6 +635,12 @@ class VoiceLoop:
                 # letting the key appear to do nothing.
                 print("     if nothing happens, grant Input Monitoring: System Settings >")
                 print("     Privacy & Security > Input Monitoring > enable your terminal")
+
+    def _voice_model_override(self) -> str | None:
+        pinned = self.cfg.get("voice_ollama_model")
+        if not pinned:
+            return None
+        return pinned if llm.resolve(self.cfg, "voice")["local"] else None
 
     def wake_label(self) -> str:
         """What to tell the user to say. Comes from whichever detector is
@@ -1314,7 +1320,13 @@ class VoiceLoop:
                 interactive=True,
                 confirm_fn=self.voice_confirm,
                 recent_turns_limit=self.cfg.get("voice_context_turns", 6),
-                model_override=self.cfg.get("voice_ollama_model", self.cfg["ollama_model"]),
+                # voice_ollama_model pins a smaller *local* model for
+                # spoken turns. It must not survive a dashboard choice of
+                # a cloud model for the voice role, or picking one would
+                # appear to do nothing at all — so it applies only while
+                # the voice role still resolves to something local.
+                model_override=self._voice_model_override(),
+                model_role="voice",
                 ollama_options={"num_predict": self.cfg.get("voice_ollama_max_tokens", 128)},
                 stream_callback=None,
                 source="voice",

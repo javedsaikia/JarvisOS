@@ -86,6 +86,8 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `user_name` — how Orin addresses you
 - `default_backend` — `"ollama"` (keep this — never set to a paid backend as default)
 - `ollama_model` / `ollama_host` — local model to use
+- `models` — the catalog the dashboard offers: `{id, provider, model, label}` each, provider one of `ollama` / `groq` / `gemini`. Add a model here and it appears in the picker
+- `model_roles` — which model answers each job: `{"chat": ..., "voice": ..., "screen": ...}`. Set from the web UI; defaults are all local
 - `claude_code_enabled` — set `false` to fully disable the escalation path
 - `claude_code_command` — the CLI command to invoke (default `"claude"`)
 - `claude_code_confirm` — ask before handing off to Claude Code (recommended, since it can take real actions)
@@ -106,7 +108,7 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `vision_enabled` — set `false` to fully disable screen understanding (default `true`)
 - `vision_ollama_model` — local Ollama vision model, used only for screens with almost no text (default `"moondream"`, `ollama pull moondream` first)
 - `screen_ocr_enabled` — read the screen with macOS on-device OCR (default `true`; the primary path — see [Screen understanding](#screen-understanding-read-only-never-confirmed))
-- `screen_text_model` — local model that answers *specific* questions about screen text (default `"qwen2.5:1.5b"`; a bigger model is more accurate and slower)
+- `screen_text_model` — pins a specific *local* model for screen questions; empty (the default) means the `screen` role from the dashboard decides
 - `screen_hud_window_marker` — window title treated as Orin's own and left out of the capture (default `"Orin HUD"`, matching the web UI's `<title>`; it is deliberately two words, since a bare "Orin" is a substring of ordinary window titles like "Monitoring")
 - `screen_hide_ui` / `screen_hide_delay_ms` — blank the web UI before a fallback screenshot, and how long to wait first (only used when native capture is unavailable)
 - `screen_cloud_fallback` / `screen_cloud_model` — paid cloud vision fallback, off by default; needs `GEMINI_API_KEY` in `jarvis/.env` and still asks before sending anything
@@ -115,6 +117,65 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `location_enabled` — set `false` to fully disable weather/nearby-places/Maps (default `true`)
 - `location_default_radius_m` — search radius for nearby-places lookups, in meters (default `3000`)
 - `calling_enabled` — set `false` to fully disable the calling feature (default `true`)
+
+## Choosing models
+
+The local model is free, private and instant — and it is also why some
+answers read as vague or invented. So the model is now a choice, made per
+*job*, in the web UI's **Models** card:
+
+| Role | What it answers | Sensible pick |
+|---|---|---|
+| `chat` | Typed conversation (terminal + web UI) | the strongest one you have |
+| `voice` | Spoken replies | the fastest one — latency dominates |
+| `screen` | Questions about what's on screen | fast, but a bigger model reads better |
+
+Three providers, one interface (`jarvis/llm.py`):
+
+- **Local (Ollama)** — free, private, always available, and always the
+  fallback.
+- **Groq** — hosted, OpenAI-compatible, very fast. `llama-3.1-8b-instant`
+  and `llama-3.3-70b-versatile` are configured out of the box.
+- **Gemini** — `gemini-2.0-flash`.
+
+Both cloud providers are plain HTTPS calls with urllib. The `groq` and
+`google-generativeai` SDKs are large dependency trees for what is one
+POST each, and this project already talks to Ollama, Sarvam and Gemini
+the same way — so adding these added no dependencies at all.
+
+### Adding a key
+
+Keys live in `jarvis/.env`, which is gitignored. `jarvis/.env.example`
+lists the names:
+
+```bash
+cp jarvis/.env.example jarvis/.env    # if you don't have one yet
+# then edit jarvis/.env and paste the key after the "="
+GROQ_API_KEY=...
+GEMINI_API_KEY=...
+```
+
+Restart the bridge and voice loop afterwards. A provider with no key still
+appears in the picker, disabled, showing which key it wants — a dropdown
+that silently hides an option gives no clue what to do about it.
+
+### What this does not change
+
+`default_backend` stays local, and the Claude Code handoff still asks
+before it runs. A cloud model is used only for a role you have explicitly
+assigned it to, which is a clearer consent model than a per-turn prompt:
+the assignment is visible in the UI, persists in `config.json`, and the
+Models card header turns amber whenever anything metered is selected.
+
+Two more things worth knowing:
+
+- **Replies are labelled by whoever actually answered** — `[Groq]`,
+  `[Gemini]`, `[Orin]`. That is deliberately the model that *ran*, not the
+  one selected: if a cloud call fails, Orin falls back to the local model,
+  says so in the log, and labels the reply `[Orin]`. Crediting the answer
+  to a model that never ran would make the label worthless.
+- **A cloud failure never ends a turn.** Unreachable API, bad key, rate
+  limit — it falls back to local and answers anyway.
 
 ## Personality
 
