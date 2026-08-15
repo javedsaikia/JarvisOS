@@ -1,0 +1,36 @@
+# Local-only HUD. Nothing here is bound to a public interface.
+#   http://max.localhost:2015
+#
+# Do not use max.local — on macOS .local is Bonjour/mDNS and the
+# browser will sit there looking for a device instead of 127.0.0.1.
+# *.localhost is defined to mean this machine (no /etc/hosts needed).
+#
+# WebSocket upgrades go to the Python bridge on 127.0.0.1:8765.
+# Static files are the Vite build in frontend/dist.
+{
+	auto_https off
+}
+
+http://max.localhost:2015, http://127.0.0.1:2015 {
+	bind 127.0.0.1
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' ws://max.localhost:2015 ws://127.0.0.1:2015 ws://127.0.0.1:8765; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self'"
+	}
+
+	encode gzip
+
+	@ws {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @ws 127.0.0.1:8765
+
+	root * frontend/dist
+	try_files {path} /index.html
+	file_server
+}

@@ -4,7 +4,7 @@
 //   - Audio played in this tab: the same AnalyserNode the orb reads, which
 //     gives a true waveform and a true frequency spectrum.
 //   - Audio played by the voice loop on the Mac's speakers: only an
-//     amplitude envelope exists (jarvis/voice_events.py), so these panels
+//     amplitude envelope exists (max/voice_events.py), so these panels
 //     show level-over-time and say so, rather than inventing 32 bins of
 //     spectrum out of one number.
 // With neither playing, they render an explicit flat "no signal" baseline.

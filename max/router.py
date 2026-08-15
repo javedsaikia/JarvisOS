@@ -1,0 +1,675 @@
+"""Cheapest-capable-first routing. Pure rule-based (zero token cost) — no model call needed to decide.
+
+Escalates to Claude Code only when the request clearly needs multi-file coding,
+complex tool use, or system changes. Everything else stays on Ollama.
+"""
+import re
+
+CLAUDE_CODE_PATTERNS = [
+    r"\bbuild me\b",
+    r"\bwrite (a |some )?(script|program|code|function|app|cli|tool)\b",
+    r"\brefactor\b",
+    r"\bdebug\b",
+    r"\bfix (this|the) bug\b",
+    r"\bimplement\b",
+    r"\bcreate a (script|project|repo|app|file)\b",
+    r"\bmulti-?file\b",
+    r"\bgit (commit|push|pr|branch|merge)\b",
+    r"\brun (the )?tests?\b",
+    r"\binstall\b.*\bpackage\b",
+    r"\bdeploy\b",
+    r"\bclaude code\b",
+]
+
+_COMPILED = [re.compile(p, re.IGNORECASE) for p in CLAUDE_CODE_PATTERNS]
+
+CALENDAR_WRITE_PATTERNS = [
+    r"\badd\b.*\b(event|to (my )?calendar)\b",
+    # "add a meeting"/"add an appointment" without the word "event" or
+    # "calendar" — seen live: "Can you add a meeting at 1pm today with the
+    # insurance agents?" fell through every pattern here, landed on plain
+    # Ollama chat, and the model *hallucinated a confirmation* ("Sure,
+    # I'll create a meeting...") without anything actually being added to
+    # the calendar. Silent data loss dressed up as success — worse than a
+    # miss the user would notice.
+    r"\badd\b.*\b(meeting|appointment|call)\b",
+    r"\bschedule\b.*\b(meeting|event|call|appointment)\b",
+    r"\bcreate (an? )?event\b",
+    r"\bbook\b.*\b(meeting|appointment)\b",
+    r"\bput\b.*\bon (my )?calendar\b",
+]
+
+# Determiners are deliberately loose ("my"/"the"/none). Spoken phrasing
+# varies far more than typed — observed live: "what's going on THE calendar"
+# missed a "my"-only pattern, fell through to Ollama, and got answered by a
+# model with no calendar access at all. A router miss here isn't a cheap
+# failure: it silently hands a tool question to an LLM that can only guess.
+CALENDAR_READ_PATTERNS = [
+    r"\bwhat.*\bon (my |the )?(calendar|schedule)\b",
+    r"\b(my|the) (calendar|schedule|agenda)\b",
+    r"\bupcoming events?\b",
+    r"\bevents? (today|tomorrow|this week|next week)\b",
+    r"\bam i free\b",
+    r"\bdo i have\b.*\b(meeting|event|call)s?\b",
+    r"\bwhat('s| is)\b.*\b(scheduled|going on)\b",
+]
+
+NOTES_WRITE_PATTERNS = [
+    r"\b(add|create|make|write|jot down|take) (a )?note\b",
+]
+
+NOTES_READ_PATTERNS = [
+    r"\b(my|the) notes?\b",
+    r"\bsearch (my |the )?notes?\b",
+    r"\bfind\b.*\bnote\b",
+    r"\bread\b.*\bnote\b",
+    r"\blist\b.*\bnotes?\b",
+]
+
+# Gmail via Composio (cli.handle_email). Writes confirm first.
+_MAILBOX = r"(?:e-?mails?|inbox|mail|gmail|g-mail)"
+
+EMAIL_WRITE_PATTERNS = [
+    r"\bsend (an? |this )?(e-?mail|gmail)\b",
+    r"\bcompose (an? )?(e-?mail|gmail)\b",
+    r"\breply to (that |this |the )?(e-?mail|gmail|message)\b",
+    rf"\b{_MAILBOX}\b.+\b(to|saying|about)\b",
+]
+
+EMAIL_READ_PATTERNS = [
+    rf"\bcheck (my |the )?{_MAILBOX}\b",
+    rf"\bread (out |through )?(my |the )?{_MAILBOX}\b",
+    rf"\bgo through (my |the )?{_MAILBOX}\b",
+    rf"\bsummar(?:ize|ise) (my |the )?{_MAILBOX}\b",
+    rf"\bopen (my |the )?{_MAILBOX}\b",
+    rf"\bdo i have (any )?(new |unread )?{_MAILBOX}\b",
+    rf"\bwhat('s| is| are)? ?(in )?(my |the )?{_MAILBOX}\b",
+    rf"\bany (new |unread )?{_MAILBOX}\b",
+    rf"\b(unread|new) {_MAILBOX}\b",
+    rf"\b(any|new)\b.*\b(unread )?{_MAILBOX}\b",
+]
+
+# Connected Composio toolkits. Require the product name so they cannot
+# steal local calendar, local files, or a literal `git` shell command.
+GITHUB_PATTERNS = [
+    r"\bgithub\b",
+]
+
+YOUTUBE_PATTERNS = [
+    r"\byoutube\b",
+]
+
+DRIVE_PATTERNS = [
+    r"\bgoogle drive\b",
+    r"\bgoogledrive\b",
+    r"\b(my |the )?drive (file|folder|doc|document)s?\b",
+]
+
+# Cal.com — not Apple Calendar. Those stay on the calendar patterns above.
+CAL_COM_PATTERNS = [
+    r"\bcal\.com\b",
+    r"\bcal com\b",
+    r"\bcal booking\b",
+    r"\bcal\.com (booking|event|link|schedule)\b",
+]
+
+# Local AppleScript status on this Mac — not a cloud account lookup.
+SPOTIFY_READ_PATTERNS = [
+    r"\bwhat('s| is) playing\b",
+    r"\bwhat (song|track) is (this|playing)\b",
+    r"\bwhat('s| is) (this )?(song|track)\b",
+    r"\bcurrent(ly playing)? (song|track)\b",
+    r"\bnow playing\b",
+]
+
+# Local AppleScript playback control (max/tools/spotify.py).
+SPOTIFY_PLAY_PATTERNS = [
+    # "the song"/"the track" deliberately excluded here — that definite
+    # article almost always precedes a specific title ("play the song
+    # Bohemian Rhapsody"), which needs SPOTIFY_PLAY_TRACK_PATTERNS below,
+    # not this generic/no-name path. Seen live: without this split, "play
+    # the song Bohemian Rhapsody" matched here first and started the
+    # default playlist instead of the actual requested song.
+    # "play a song" / "play some music" with NOTHING named after it.
+    # "play a song Nothing Else Matters by Metallica" used to match here
+    # because of `songs?`, then play() resumed whatever was paused
+    # (High Hopes). A title after "song" must go to play_track.
+    r"\bplay (some |a )?(something|music|anything)\b",
+    r"\bplay (some |a )?songs?\s*$",
+    r"\bplay (some |a )?songs?\s+(on|in)\s+spotify\s*$",
+    r"\bplay the (something|music|anything|playback)\b",
+    r"\bplay spotify\b",
+    r"\bresume (the )?(music|song|playback|spotify)\b",
+    # "start the music" is ordinary phrasing that previously matched
+    # nothing and fell through to the LLM. Safe alongside
+    # SPOTIFY_OPEN_PATTERNS because that group is checked first, so
+    # "start spotify" still means launch-without-playing.
+    r"\bstart (the )?(music|song|playback)\b",
+    r"\bunpause\b",
+]
+
+# Just launch the app — never start playback. Checked before the play
+# group so "open spotify" can't be read as a request to resume. Requires
+# the word "spotify" specifically, so "start the music" still plays.
+SPOTIFY_OPEN_PATTERNS = [
+    r"\b(open|launch|start|fire up)\s+(up\s+)?spotify\b",
+]
+
+SPOTIFY_PAUSE_PATTERNS = [
+    r"\bpause (the )?(music|song|spotify|playback)\b",
+    r"\bstop (the )?(music|song|spotify|playback)\b",
+    # Explicit negative instruction ("do not play"/"don't play the song") —
+    # requires a music-related noun so idioms ("don't play games with me",
+    # "don't play it safe") don't misfire. Mapped to pause rather than a
+    # no-op: if something's already playing this stops it; if nothing is,
+    # pause is a harmless no-op — either way nothing starts playing.
+    r"\b(do not|don't) play (the |any |that |this )?(music|song|spotify|track)\b",
+    # "stop playing", "stop playing on/in Spotify", "stop playing the
+    # music" — the patterns above need a music word directly after "stop",
+    # so the very common "stop PLAYING ..." phrasing matched nothing.
+    # Anchored to the end so it stays about playback and an unrelated
+    # "stop playing games with me" doesn't pause the music.
+    r"\bstop playing\b(\s+(the\s+)?(music|song|track|playback|spotify)|\s+(on|in)\s+spotify)?\s*[.!?]?\s*$",
+]
+
+# Mute (volume to 0, remembers the level for unmute) is distinct from
+# pause above — the point is to let the mic hear a spoken command clearly
+# without music underneath, not to stop playback. `.*` gaps (matching the
+# same loose style as SPOTIFY_PLAY_TRACK_PATTERNS below) instead of a
+# fixed word sequence, since natural phrasing varies a lot here — e.g.
+# "the volume of Spotify should get muted" has words between "volume" and
+# "muted" that a tight sequence wouldn't allow for.
+SPOTIFY_MUTE_PATTERNS = [
+    r"\bmute (the )?(spotify|music|song|volume)\b",
+    r"\b(spotify|volume|music)\b.*\bmuted\b",
+]
+
+SPOTIFY_UNMUTE_PATTERNS = [
+    r"\bunmute (the )?(spotify|music|song|volume)\b",
+    r"\b(spotify|volume|music)\b.*\bunmuted\b",
+]
+
+SPOTIFY_VOLUME_DOWN_PATTERNS = [
+    r"\bdecrease (the )?volume\b",
+    r"\bturn down (the )?(volume|music|spotify|song)\b",
+    r"\bvolume down\b",
+    r"\blower (the )?volume\b",
+    r"\b(spotify|music)\b.*\b(volume|it)\b.*\bdecreased\b",
+]
+
+SPOTIFY_VOLUME_UP_PATTERNS = [
+    r"\bincrease (the )?volume\b",
+    r"\bturn up (the )?(volume|music|spotify|song)\b",
+    r"\bvolume up\b",
+    r"\bmake it louder\b",
+]
+
+SPOTIFY_NEXT_PATTERNS = [
+    r"\bnext (song|track)\b",
+    r"\bskip (this |the )?(song|track)\b",
+]
+
+SPOTIFY_PREVIOUS_PATTERNS = [
+    r"\bprevious (song|track)\b",
+    r"\b(go back|play) (the )?(previous|last) (song|track)\b",
+    r"\bgo back (a|one) (song|track)\b",
+]
+
+# Named-song/artist requests — checked AFTER SPOTIFY_PLAY_PATTERNS in
+# _TOOL_GROUPS below, so generic phrasings ("play something on spotify")
+# still resolve to the cheap generic action first. Requires an explicit
+# "on/in spotify" or "the song/track" cue rather than a bare "play X" —
+# a bare catch-all would misfire on unrelated things like "play devil's
+# advocate". See max.tools.parsing.extract_song_query for the text
+# actually sent to Spotify's search API.
+SPOTIFY_PLAY_TRACK_PATTERNS = [
+    r"\bplay\b.+\bon spotify\b",
+    r"\bplay\b.+\bin spotify\b",
+    r"\bplay the (song|track)\b.+",
+    r"\bput on\b.+\bspotify\b",
+    # Follow-ups that name no title — "play it", "go ahead and play that".
+    # Must route here (not to chat) so play_track can reuse the last query.
+    # The pronouns are excluded from the bare-title pattern below so they
+    # are never searched as a song name. Seen live: "Go ahead and play it"
+    # searched "it" and started a Hindi film song.
+    r"\bplay (it|that|this|the song|the track)\b",
+    r"\bgo ahead and play\b",
+    r"\bjust play (it|that|this)?\b",
+    # Bare "play <something>" with no "on Spotify" — said live as "Play
+    # Pink Floyd High Hopes." It matched nothing, fell through to the
+    # model, and the model replied "Okay, I'm playing High Hopes by Pink
+    # Floyd on Spotify now" while nothing played. A hallucinated action is
+    # the worst possible outcome here, so the bare form has to route.
+    # SPOTIFY_PLAY_PATTERNS (generic "play some music") is checked first,
+    # so this only sees requests that name something.
+    # it/that/this are excluded — those are follow-ups, handled above.
+    r"\bplay\b\s+(?!some\b|the\b|any\b|music\b|something\b|anything\b|it\b|that\b|this\b)\S+",
+    # STT of "play" — seen live: "Bile, nothing else matters by Metallica".
+    r"\b(bile|ply)\b[,\s]+\S+",
+]
+
+# Deterministic, not LLM-mediated — read-only informational, same tier as
+# calendar/notes/email reads.
+# Real headlines via RSS (cli.handle_news). Must match before chat so the
+# model cannot invent "today's news" from training data — seen live on
+# weather and politics questions. Requires a news word, not a bare
+# "what's happening at work".
+NEWS_PATTERNS = [
+    r"\b(latest |today'?s |the |daily )?(ai |tech(?:nology)? |politic(?:al|s)? |finance |financial |business |world |global )?news\b",
+    r"\bheadlines\b",
+    r"\bwhat'?s happening (today|in the world|globally|across the globe|in (ai|tech|politics|finance))\b",
+    r"\bnews (today|briefing|update|roundup)\b",
+]
+
+WEATHER_PATTERNS = [
+    r"\bwhat('s| is) the weather\b",
+    r"\bhow('s| is) the weather\b",
+    r"\bhow'?s weather\b",
+    r"\bweather (today|now|outside|like|here|forecast|report)\b",
+    r"\b(current |today'?s |local |my )?weather\b",
+    r"\b(check|tell me|give me|get) (the |today'?s )?weather\b",
+    r"\bis it (going to |gonna )?rain(ing)?\b",
+    r"\btemperature (outside|here|today)\b",
+    r"\bhow (hot|cold|warm) is it\b",
+    r"\bhow'?s it (look )?(outside|out there)\b",
+    # Assamese / Hindi — otherwise these skip the tool and the model
+    # invents a forecast or asks which city.
+    r"বতৰ",
+    r"আবহাওয়া",
+    r"मौसम",
+    r"\b(botor|mausam)\b",
+]
+
+# Category (restaurant/hotel/gas station/...) is extracted by
+# max.tools.location.detect_category — a plain keyword lookup over a
+# small fixed vocabulary, not LLM extraction. Deliberately requires both
+# a place-type word AND a proximity word ("nearby"/"near me"/...) so a
+# plain "restaurant" mention in unrelated conversation doesn't misfire.
+# One vocabulary for "a place", reused by every pattern below. Seen live:
+# "what is the nearest restaurant right now which is open at the moment?"
+# matched nothing, fell through to the plain model, and got "I don't have
+# real-time access to current locations" — an apology for a capability
+# this actually has. A miss here is not a cheap failure: it hands a
+# location question to something with no location.
+_PLACE = (r"(?:restaurants?|hotels?|gas stations?|petrol|fuel|caf[eé]s?|coffee"
+          r"|pharmac(?:y|ies)|food|places? to eat|somewhere to eat|bars?|atms?"
+          r"|hospitals?|clinics?|supermarkets?|groceries|grocery stores?)")
+_NEAR = r"(?:nearby|near me|near here|near my location|around here|close by|closest|nearest|in the area|around me)"
+
+# "Where am I?" is not weather. Seen live: "Max মোৰ location-টো কি?" and
+# "মোৰ ঠাইটুকুৰাৰ নাম কি?" missed every location group, fell through to
+# Sarvam, and the model either invented a place name or told the user to
+# ask for the weather — because the persona's weather fallback was the
+# only location-shaped hint it had. Town name comes from GPS, never the
+# model. Keep this narrower than a bare "location" so "location services"
+# and STT junk like "watch my location" stay out.
+HERE_PATTERNS = [
+    r"\bwhere am i\b",
+    r"\bwhere are we\b",
+    r"\bwhat('s| is) my (current )?location\b",
+    r"\bwhat('s| is) (the )?(name of )?(this |my |the )?(current )?(city|town|place)\b",
+    r"\b(my |our )(current )?location\b",
+    r"\bthe current location\b",
+    r"\bcurrent location\b",
+    r"\bwhat (city|town|place) am i (in|at)\b",
+    r"\bwhich (city|town) (am i|are we) (in|at)\b",
+    r"\bname of (this |the |my )?(town|city|place)\b",
+    r"\b(tell me|say) (my |the )?(current )?(location|city|town)\b",
+    # Assamese — ঠাই/জেগা/ক'ত আছোঁ, plus the English loan "location"
+    # with the Assamese classifier (location-টো).
+    r"ঠাইটুকুৰা",
+    r"মোৰ ঠাই",
+    r"ঠাই.{0,12}নাম",
+    r"জেগা",
+    r"ক['\u2019]?ত আছ",
+    r"মোৰ location",
+    r"location[- ]?টো",
+    # Hindi
+    r"मैं कहाँ हूँ",
+    r"कहाँ हूँ",
+    r"मेरी (लोकेशन|location)",
+]
+
+NEARBY_PATTERNS = [
+    rf"\b{_NEAR}\b.*\b{_PLACE}\b",
+    rf"\b{_PLACE}\b.*\b{_NEAR}\b",
+    rf"\bfind (?:a |the |me )?(?:nearby |closest |nearest |good )?{_PLACE}\b",
+    rf"\bwhere(?:'s| is| can i find)? (?:the )?(?:nearest|closest) ?{_PLACE}?\b",
+    # "where can I eat", "somewhere to grab a coffee" — the intent is a
+    # place near the user even with no proximity word at all.
+    r"\bwhere can i (?:eat|get (?:some )?(?:food|coffee|lunch|dinner|breakfast))\b",
+    rf"\b(?:any|some) (?:good |decent |nice )?{_PLACE}\b.*\b(?:open|around|here|near)\b",
+    # Asking for the names is the whole request — no proximity word.
+    # Seen live: "মোৰ ওচৰৰ restaurant-ৰ নাম" skipped the tool and Sarvam
+    # invented Spice Garden / Burger Junction.
+    rf"\b(?:list|show|give me|tell me|what(?:'s| is| are)?) (?:some |the |any |a )?(?:nearby |nearest |closest |local |good )?{_PLACE}\b",
+    rf"\bnames? of (?:the |some |any )?(?:nearby |nearest |local )?{_PLACE}\b",
+    rf"\b{_PLACE}\b[- ]?(?:names?|list)\b",
+    # Assamese / Hindi — restaurant as an English loan is how it is
+    # actually said. ৰেষ্টুৰেণ্ট / रेस्तरां for the native spellings.
+    r"ওচৰ.{0,24}(?:restaurant|ৰেষ্টুৰেণ্ট|হোটেল|cafe|ক্যাফে)",
+    r"(?:restaurant|ৰেষ্টুৰেণ্ট|হোটেল).{0,16}(?:ওচৰ|নাম)",
+    r"restaurant[- ]?ৰ নাম",
+    r"ৰেষ্টুৰেণ্ট",
+    r"आसपास.{0,16}(?:रेस्तरां|होटल|restaurant)",
+    r"रेस्तरां",
+]
+
+# "What can you do?" answered from the actual tool list rather than by the
+# model. Deterministic for the same reason calendar reads are: the model
+# does not know what tools exist, and — measured live — it anchors on its
+# own earlier denial and repeats it. Asked "do you have access to my local
+# folders?" it replied "I don't have direct access to your personal
+# files", which is false, and teaches the user not to bother asking.
+# Checked AFTER the action groups, so "read my screen" still reads the
+# screen instead of describing the ability to.
+# Which model is answering is a setting, so it has an exact answer.
+# Asked live, the model replied "I'm based on OpenAI's GPT-4" and, on the
+# local model, "I am using an Apple MacBook Pro with M1 chip" — both
+# invented, and both about the one subject the code knows for certain.
+MODEL_QUESTION_PATTERNS = [
+    # Both word orders: "which model ARE YOU using" and "which model YOU
+    # ARE using" — the second is how it was actually asked out loud.
+    r"\b(which|what) (model|llm|ai)\b[^.?!]{0,30}\b(are you|you are|you.re|is this|do you|you.?ve got)\b",
+    r"\bwhat('s| is) (your|the) (model|llm|backend)\b",
+    r"\bare you (running|using) (on |a )?(local|groq|gemini|ollama|cloud)\b",
+    r"\bwho (made|built|trained) you\b",
+]
+
+CAPABILITY_PATTERNS = [
+    r"\bwhat (can|do) you do\b",
+    r"\bwhat are (your|the) (capabilities|abilities|features|tools)\b",
+    r"\bwhat can you help (me )?with\b",
+    r"\bdo you have access to\b",
+    r"\bcan you access\b",
+    r"\bdo you have (any )?(tools|abilities|access)\b",
+    r"\bwhat (tools|abilities) do you have\b",
+    r"\bare you able to (access|use|control)\b",
+]
+
+# Confirmed — opens a real app with a real URL. See MAPS_PATTERNS' domain
+# entry in _TOOL_GROUPS: ("location", "open_maps"), gated in
+# cli.handle_open_maps.
+MAPS_PATTERNS = [
+    r"\bopen (that |this |it )?(in|on) (apple )?maps\b",
+    r"\bshow (that |this |it )?on (the |a )?map\b",
+    r"\bopen maps\b",
+]
+
+# Confirmed, deterministic — NOT LLM-mediated, same reasoning as
+# SHELL_PATTERNS above: calling a real phone number is a real-world
+# action, so whether it happens can't depend on a model reliably emitting
+# a tool-call. max.tools.calling.parse_phone_number does the actual
+# number extraction; this just detects the calling intent.
+CALL_PATTERNS = [
+    r"\bcall (this |that )?number\b",
+    r"\bcall\b.*\d{3}",
+    r"\bdial\b.*\d{3}",
+    r"\bdial (this |that )?number\b",
+    # Calling a place by name ("call Hotel Heritage") or referring back to
+    # one ("call them"). Without these, only spoken digits reached
+    # cli.handle_call and everything else fell through to the plain LLM —
+    # which answered "I'll place a call" and then "I'm en route", having
+    # done neither. The number is looked up and shown before anything is
+    # dialled; see handle_call.
+    #
+    # The negative lookahead is what keeps this safe. English is full of
+    # "call" idioms that have nothing to do with telephones, and dialling
+    # a stranger because someone said "call it a day" is not a recoverable
+    # mistake.
+    # Bare it/this/that are excluded here rather than allowed: they are far
+    # more often idiom ("what do you call this", "call it a day") than a
+    # real request, and the genuine forms are already covered — "call this
+    # number" by the first pattern above and "call that place" by the
+    # referential one below.
+    # Name no longer has to be the last thing in the utterance. Seen live:
+    # "Can you call Nova, call and reserve a booking?" missed the $-anchored
+    # form, fell through to chat, and the model asked for a number — even
+    # though the restaurant had just been listed and handle_call already
+    # looks names up. "and"/"or" stay excluded so "call and reserve" is
+    # not treated as a place called "and".
+    r"\b(?:call|ring|phone)\s+(?:up\s+)?(?:the\s+)?"
+    r"(?!it\b|this\b|that\b|me\b|you\b|us\b|back\b|off\b|out\b|in\b|for\b|on\b|upon\b|"
+    r"and\b|or\b|"
+    r"an? (?:meeting|ambulance|taxi|cab|uber)\b)"
+    r"[A-Za-z][\w'&.\-]*",
+    r"\bcall (them|him|her|that place|that one|that restaurant|that hotel)\b",
+]
+
+# Deliberately narrow — "write a script to rename files" must still escalate
+# to Claude Code (matches CLAUDE_CODE_PATTERNS' "write a script"), not get
+# swallowed here. These only match direct, simple file operations that still
+# need LLM extraction (a path/content isn't literally present in the text
+# the way a shell command is) — see SHELL_PATTERNS below for the
+# deterministic, non-LLM-mediated shell path.
+# Deterministic, not LLM-mediated — there's nothing to extract from the
+# phrasing (unlike browser targets/URLs below), so this is the same
+# "cheap and direct" treatment as calendar/notes/email reads.
+SCREEN_PATTERNS = [
+    r"\bwhat('s| is) on (my |the )?screen\b",
+    r"\bwhat (can |do )?you (see|tell).{0,40}(screen|desktop)\b",
+    r"\bwhat('s| is) on (this|the) page\b",
+    r"\bdescribe what i('m| am) (looking at|seeing)\b",
+    r"\bwhat do you see\b",
+    r"\btake a screenshot\b",
+    # The obvious ways to ask, none of which matched: "what am I looking
+    # at", "describe my screen", "read my screen", "can you see my screen".
+    r"\bwhat am i (looking at|seeing)\b",
+    r"\b(describe|read|check|look at|analyse|analyze) (my |the |this )?screen\b",
+    r"\bcan you see (my |the )?screen\b",
+    r"\bwhat('s| is) (this|that) on (my |the )?screen\b",
+    # Questions *about* something on the screen, rather than a request for
+    # a general description. These used to fall through to plain chat,
+    # where the model has no screen and cheerfully invented an answer —
+    # "what does the screen say about the installer stages?" produced a
+    # confident description of an installer that was never on screen.
+    r"\bwhat does (my |the )?screen say\b",
+    r"\b(read|check|find|describe|explain|summari[sz]e)\b[^.?!]{0,40}\bon (my|the) screen\b",
+    # Teacher / whole-desktop phrasing. Without these, "teach me this" and
+    # "read my desktop" fell through to chat, which has no screen.
+    # Anchored to the screen/file/desktop so "explain photosynthesis"
+    # stays ordinary chat.
+    r"\b(teach|tutor) (me )?(this|that|what.?s on|the screen|my (screen|desktop|code|file))\b",
+    r"\bexplain (this|that|the screen|what.?s on|my (screen|desktop|code|file))\b",
+    r"\bwalk me through (this|that|the screen|my (code|file|screen|desktop))\b",
+    r"\bhelp me understand (this|that|the screen|what.?s on)\b",
+    r"\bwhat('s| is) (this|that) (file|code|screen|page)\b",
+    r"\bwhat file is (this|that|open)\b",
+    r"\b(read|check|look at|explain) (this |that )(file|code)\b",
+    r"\b(read|check|look at|explain) (the |my )?(code|desktop)\b",
+    r"\bread (the |my )?file on (my |the )?screen\b",
+    r"\bwhat('s| is) on (my |the )?desktop\b",
+    r"\bread (my |the )?(whole )?desktop\b",
+    # Guide-me: point the cursor at a control they cannot find.
+    r"\b(show|point|guide) (me )?(where |to )?(the |this |that )?",
+    r"\bwhere (is|are) (the |this |that )?.{0,40}(button|tab|link|icon|menu)?",
+    r"\bi (can'?t|cannot|am not able to) see\b",
+    r"\b(show|find) (me )?(the |this |that )?.{0,40}(button|tab|link|on (my |the )?screen)\b",
+    r"\bwhat('s| is) this .{0,24}(button|link|tab|icon|menu)\b",
+    r"\b(the |this |that )?(pull requests?|settings) (button|tab|link)\b",
+    r"\bpoint (a |the )?(cursor|pointer|mouse)\b",
+    r"\b(show|point) (it |that |this )?(to me|out)\b",
+    r"\bwhere exactly\b",
+    r"^(hey[, ]+)?(max[, ]+)?(yes[, ]+)?(can you )?show me\b",
+]
+
+# Browser actions are LLM-mediated (like FILES_PATTERNS below) — click
+# targets, typed text, and URLs are too free-form for deterministic
+# extraction. Every action these route to that changes state
+# (open_url/click/type_text) is confirmed in cli.execute_browser_tool
+# before it runs; only get_page_text/get_current_url are automatic.
+BROWSER_PATTERNS = [
+    r"\bclick (the |on )?.+\b(button|link)\b",
+    r"\bfill (in |out )?(the )?form\b",
+    r"\bnavigate to\b",
+    r"\bopen (this |the )?(url|website|webpage|link)\b",
+    # "can you open a browser?" — asked live, matched nothing, and the
+    # model denied having the ability at all.
+    r"\bopen (a |the )?browser\b",
+    r"\b(open|launch|start) (chrome|chromium|safari|firefox)\b",
+    r"\btype\b.+\b(into|in) the\b",
+    r"\bgo to\b.+\b(and|then)\b",
+    # Bare "go to <url>" (no compound "and do X" clause) — seen live:
+    # without this, "go to example.com" fell through to plain Ollama,
+    # which HALLUCINATED a fake "you're now on the page" confirmation
+    # without ever actually navigating. Requires something URL-shaped
+    # after "go to" (a dot-TLD or a scheme) so plain "go to sleep"/"go to
+    # the store" don't misfire.
+    r"\bgo to\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
+    # Same gap, different verb — seen live: "open wikipedia.org in the
+    # browser" fell through to plain Ollama (which correctly declined
+    # rather than hallucinating, but still never navigated) because the
+    # existing "open ... url/website/webpage/link" pattern only matches
+    # those literal nouns, not a bare domain. Same URL-shape requirement
+    # as the "go to" pattern above so "open the calendar"/"open spotify"
+    # don't misfire.
+    r"\bopen\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
+]
+
+FILES_PATTERNS = [
+    r"\bread (the |a )?file\b",
+    r"\bopen (the |a )?file\b",
+    r"\bshow me (the )?(contents of )?(the |a )?file\b",
+    r"\blist (the )?files? in\b",
+    r"\bwhat('s| is) in\b.*\b(folder|directory)\b",
+    r"\bwrite\b.*\b(to|into) (a |the )?file\b",
+    r"\bcreate (a |an )?file\b",
+    r"\bsave\b.*\b(to|into|as) (a |the )?file\b",
+    r"\bproject (files|directory|folder)\b",
+    r"\bsearch (for |my )?(a |the )?files?\b",
+    r"\bfind (a |the |my )?files?\b",
+    r"\bsearch (my |the )?(desktop|documents|downloads)\b",
+    # "can you check my local files" — asked live, matched nothing, and
+    # the model answered "I don't actually have access to your personal
+    # files", which is false. Any phrasing that names files/folders plus
+    # a looking-at verb belongs here.
+    r"\b(check|look at|look through|browse|access|go through|see)\b[^.?!]{0,20}\b(my |the |local )*(files?|folders?|documents|directory|directories)\b",
+    r"\b(my|the|local) (files?|folders?)\b",
+    # Ordinary phrasings that matched nothing: "what files do I have on my
+    # Desktop", "do I have a file about taxes", "show me the contents of
+    # README.md" (the existing rule needs the literal word "file" after
+    # "contents of", which nobody says when naming an actual filename).
+    r"\bwhat files\b",
+    r"\bdo i have (a |any )?(file|document)s?\b",
+    r"\bshow me (the )?contents of\b",
+    r"\b(any|which) (files?|documents?)\b.*\b(desktop|documents|downloads|folder|directory)\b",
+    r"\blook (in|at) (my |the )?(desktop|documents|downloads)\b",
+]
+
+# Shell commands get their own domain, deliberately NOT LLM-mediated: "run
+# X" is a literal instruction, so the command is regex-extracted
+# (parsing.extract_shell_command) and confirmed/executed directly. Routing
+# this through Ollama's tool-calling (like the "files" domain) was tried
+# first and found unreliable — the model doesn't always emit the tool-call
+# JSON even when told to, and when it doesn't, the fabricated text response
+# was returned as the answer with no confirmation ever asked and no command
+# ever actually run. Since "always confirm before executing" is a hard
+# requirement, the decision to run can't depend on model compliance.
+#
+# "run"/"execute" is deliberately treated as an explicit, literal shell
+# invocation that always wins over CLAUDE_CODE_PATTERNS (e.g. "run git
+# status" goes to the confirmed local shell tool, not Claude Code, even
+# though "git" also appears in CLAUDE_CODE_PATTERNS) — this is checked
+# first in detect_tool. The distinction is: "run <command>" names a literal
+# command to execute; "commit this" / "install the package" describe an
+# outcome and still need Claude Code to figure out specifics.
+_SHELL_VERBS = (
+    r"ls|cd|cat|echo|pwd|mkdir|rmdir|rm|cp|mv|touch|grep|find|head|tail|wc|df|du|ps|"
+    r"whoami|date|open|say|which|chmod|chown|kill|top|env|uname|git|npm|npx|pip3?|"
+    r"python3?|node|brew|make|yarn|curl|wget|tar|zip|unzip|sed|awk|osascript|bash|sh|zsh"
+)
+
+SHELL_PATTERNS = [
+    r"\brun\b.*\b(shell )?command\b",
+    r"\bexecute\b.*\bcommand\b",
+    r"\bshell command\b",
+    # bare "run/execute <literal command>", e.g. "Run ls -la", "execute git status"
+    rf"\b(run|execute)\b\s+(?:this\s+|the\s+|following\s+|exact\s+)*({_SHELL_VERBS})\b",
+    # generic: "run/execute" plus shell syntax (a flag, pipe, redirect, or chain)
+    r"\b(run|execute)\b.*(\s-{1,2}\w|\||&&|;|>)",
+]
+
+_TOOL_GROUPS = [
+    ("calendar", "write", [re.compile(p, re.IGNORECASE) for p in CALENDAR_WRITE_PATTERNS]),
+    ("calendar", "read", [re.compile(p, re.IGNORECASE) for p in CALENDAR_READ_PATTERNS]),
+    ("notes", "write", [re.compile(p, re.IGNORECASE) for p in NOTES_WRITE_PATTERNS]),
+    ("notes", "read", [re.compile(p, re.IGNORECASE) for p in NOTES_READ_PATTERNS]),
+    ("email", "write", [re.compile(p, re.IGNORECASE) for p in EMAIL_WRITE_PATTERNS]),
+    ("email", "read", [re.compile(p, re.IGNORECASE) for p in EMAIL_READ_PATTERNS]),
+    ("github", "auto", [re.compile(p, re.IGNORECASE) for p in GITHUB_PATTERNS]),
+    ("youtube", "auto", [re.compile(p, re.IGNORECASE) for p in YOUTUBE_PATTERNS]),
+    ("googledrive", "auto", [re.compile(p, re.IGNORECASE) for p in DRIVE_PATTERNS]),
+    ("cal", "auto", [re.compile(p, re.IGNORECASE) for p in CAL_COM_PATTERNS]),
+    ("spotify", "read", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_READ_PATTERNS]),
+    # pause checked BEFORE play — seen live: "don't play the music" contains
+    # the substring "play the music", which SPOTIFY_PLAY_PATTERNS matches
+    # regardless of the "don't" in front (patterns aren't negation-aware).
+    # Checking the narrower, negation-including pause group first means a
+    # negated play phrase resolves correctly; no genuine "play X" request
+    # matches any pause pattern, so this reordering doesn't change any
+    # other outcome.
+    ("spotify", "open", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_OPEN_PATTERNS]),
+    ("spotify", "pause", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PAUSE_PATTERNS]),
+    ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
+    ("spotify", "mute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_MUTE_PATTERNS]),
+    ("spotify", "unmute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_UNMUTE_PATTERNS]),
+    ("spotify", "volume_down", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_DOWN_PATTERNS]),
+    ("spotify", "volume_up", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_UP_PATTERNS]),
+    ("spotify", "next", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_NEXT_PATTERNS]),
+    ("spotify", "previous", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PREVIOUS_PATTERNS]),
+    ("spotify", "play_track", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_TRACK_PATTERNS]),
+    ("news", "auto", [re.compile(p, re.IGNORECASE) for p in NEWS_PATTERNS]),
+    ("location", "weather", [re.compile(p, re.IGNORECASE) for p in WEATHER_PATTERNS]),
+    ("location", "nearby", [re.compile(p, re.IGNORECASE) for p in NEARBY_PATTERNS]),
+    # After weather/nearby so "weather at my location" and "restaurants
+    # near my location" stay weather/nearby. Bare "where am I" / "my
+    # location" only reach here.
+    ("location", "here", [re.compile(p, re.IGNORECASE) for p in HERE_PATTERNS]),
+    ("location", "open_maps", [re.compile(p, re.IGNORECASE) for p in MAPS_PATTERNS]),
+    ("call", "auto", [re.compile(p, re.IGNORECASE) for p in CALL_PATTERNS]),
+    # After every action group above, so a request to DO something is
+    # never answered with a description of being able to do it.
+    ("capabilities", "model", [re.compile(p, re.IGNORECASE) for p in MODEL_QUESTION_PATTERNS]),
+    ("capabilities", "read", [re.compile(p, re.IGNORECASE) for p in CAPABILITY_PATTERNS]),
+    # Checked before "files" — a request naming a literal command (e.g. "run
+    # ls -la") must never fall through to the LLM-mediated files path.
+    ("shell", "auto", [re.compile(p, re.IGNORECASE) for p in SHELL_PATTERNS]),
+    ("screen", "read", [re.compile(p, re.IGNORECASE) for p in SCREEN_PATTERNS]),
+    # Checked before "files" — e.g. "open this website" must not fall
+    # through to the files domain's "open (the|a) file" pattern.
+    ("browser", "auto", [re.compile(p, re.IGNORECASE) for p in BROWSER_PATTERNS]),
+    ("files", "auto", [re.compile(p, re.IGNORECASE) for p in FILES_PATTERNS]),
+]
+
+
+def detect_tool(text: str) -> tuple[str, str] | None:
+    """Return (domain, action) e.g. ('calendar', 'read'), or None if this
+    isn't a Calendar/Notes/Files/Shell-shaped request. Checked before
+    decide_backend — tool calls are cheaper than both Ollama and Claude Code.
+    'files' action is always 'auto': the LLM decides which specific file
+    tool to call, since paths/content are too free-form for regex
+    extraction. 'shell' is also 'auto' but is NOT LLM-mediated — see
+    SHELL_PATTERNS above for why.
+    """
+    stripped = text.strip()
+    for domain, action, patterns in _TOOL_GROUPS:
+        for pattern in patterns:
+            if pattern.search(stripped):
+                return domain, action
+    return None
+
+
+def decide_backend(text: str, default_backend: str = "ollama") -> str:
+    """Return 'claude_code' or 'ollama'."""
+    stripped = text.strip()
+
+    if stripped.startswith("/claude"):
+        return "claude_code"
+    if stripped.startswith("/ollama"):
+        return "ollama"
+
+    for pattern in _COMPILED:
+        if pattern.search(stripped):
+            return "claude_code"
+
+    return default_backend

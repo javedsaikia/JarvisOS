@@ -1,4 +1,4 @@
-// Thin WebSocket client for the Orin bridge (jarvis/bridge.py).
+// Thin WebSocket client for the Max bridge (max/bridge.py).
 // Mirrors the message protocol exactly — no logic/decisions happen here,
 // just relaying. Routing/cost/confirmation decisions all happen server-side.
 
@@ -39,6 +39,7 @@ export type ServerMessage =
       roles: Record<string, string>;
       role_labels: Record<string, string>;
     }
+  | { type: "memory_state"; facts: string[]; style: string[] }
   | {
       type: "spotify_state";
       active: boolean;
@@ -52,7 +53,7 @@ export type ServerMessage =
 
 type Listener = (msg: ServerMessage) => void;
 
-export class OrinSocket {
+export class MaxSocket {
   private ws: WebSocket | null = null;
   private listeners: Listener[] = [];
   private url: string;

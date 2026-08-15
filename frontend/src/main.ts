@@ -6,14 +6,41 @@ import { HudRing } from "./hud-ring";
 import { Visualizers } from "./visualizers";
 import { VoiceRing } from "./voice-ring";
 import { EnvelopePlayer } from "./envelope-player";
-import { OrinSocket, type ServerMessage } from "./socket";
+import { MaxSocket, type ServerMessage } from "./socket";
 import { SpotifyWidget } from "./spotify-widget";
 
-// Overridable with ?bridge=ws://host:port — the bridge is normally on this
-// machine, but this makes it possible to open the HUD from another device
-// on the LAN (or against a second bridge) without a rebuild.
-const BRIDGE_URL =
-  new URLSearchParams(location.search).get("bridge") || "ws://localhost:8765";
+// Overridable with ?bridge=ws://host:port. Behind Caddy (max.local) the
+// page and the socket share a host; Vite still talks to the bridge port.
+function defaultBridgeUrl(): string {
+  const { protocol, hostname, host, port } = location;
+  if (hostname === "localhost" && port === "5173") {
+    return "ws://127.0.0.1:8765";
+  }
+  const ws = protocol === "https:" ? "wss" : "ws";
+  return `${ws}://${host}`;
+}
+
+function safeBridgeUrl(candidate: string | null, fallback: string): string {
+  if (!candidate) return fallback;
+  try {
+    const u = new URL(candidate);
+    const host = (u.hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+    const local =
+      host === "127.0.0.1" ||
+      host === "::1" ||
+      host === "localhost" ||
+      host.endsWith(".localhost");
+    if ((u.protocol === "ws:" || u.protocol === "wss:") && local) return candidate;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+const BRIDGE_URL = safeBridgeUrl(
+  new URLSearchParams(location.search).get("bridge"),
+  defaultBridgeUrl(),
+);
 
 const canvas = document.getElementById("orb-canvas") as HTMLCanvasElement;
 const orb = new Orb(canvas);
@@ -65,7 +92,7 @@ const envelopePlayer = new EnvelopePlayer(
 
 let connected = false;
 let voiceRunning = false;
-const socket = new OrinSocket(BRIDGE_URL, (isConnected) => {
+const socket = new MaxSocket(BRIDGE_URL, (isConnected) => {
   connected = isConnected;
   ui.setConnectionState(isConnected);
   ui.setLink(BRIDGE_URL, isConnected);
@@ -82,7 +109,8 @@ ui.setLink(BRIDGE_URL, connected);
 // the label the core itself produced (cli.label()) — not a guess made here.
 const tiers = Array.from(document.querySelectorAll<HTMLElement>(".tier"));
 function highlightTier(label: string): void {
-  tiers.forEach((t) => t.classList.toggle("active", t.dataset.label === label));
+  const face = UI.publicLabel(label);
+  tiers.forEach((t) => t.classList.toggle("active", t.dataset.label === face));
 }
 
 socket.onMessage((msg: ServerMessage) => {
@@ -153,6 +181,10 @@ socket.onMessage((msg: ServerMessage) => {
     }
     case "models_state": {
       ui.setModels(msg.models, msg.roles, msg.role_labels);
+      break;
+    }
+    case "memory_state": {
+      ui.setMemory(msg.facts || [], msg.style || []);
       break;
     }
     case "mic_state": {

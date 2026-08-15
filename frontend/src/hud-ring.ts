@@ -120,7 +120,7 @@ export class HudRing {
     });
   }
 
-  /** amplitude in [0, 1] — outer arc fills as Orin speaks, from the same
+  /** amplitude in [0, 1] — outer arc fills as Max speaks, from the same
    * real analyser data that drives the orb's glow. */
   setAmplitude(amplitude: number): void {
     const clamped = Math.max(0, Math.min(1, amplitude));

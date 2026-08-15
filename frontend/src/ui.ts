@@ -51,6 +51,10 @@ export class UI {
   private coreState: HTMLElement;
   private modelRoles: HTMLElement;
   private modelsStatus: HTMLElement;
+  private frontCard: HTMLElement | null;
+  private frontShutter: HTMLButtonElement | null;
+  private memoryFacts: HTMLElement | null;
+  private memoryStatus: HTMLElement | null;
   private micLabel: HTMLElement;
 
   // HUD readout panel — purely additive, independent of status-dot/statusLabel above.
@@ -106,6 +110,10 @@ export class UI {
     this.coreState = document.getElementById("core-state")!;
     this.modelRoles = document.getElementById("model-roles")!;
     this.modelsStatus = document.getElementById("models-status")!;
+    this.frontCard = document.getElementById("front-card");
+    this.frontShutter = document.getElementById("front-shutter") as HTMLButtonElement | null;
+    this.memoryFacts = document.getElementById("memory-facts");
+    this.memoryStatus = document.getElementById("memory-status");
     this.micLabel = document.getElementById("mic-label")!;
 
     this.readoutLink = document.getElementById("readout-link")!;
@@ -147,8 +155,36 @@ export class UI {
     });
     this.forceLocalBtn?.addEventListener("click", () => this.trySend("/ollama "));
     this.forceClaudeBtn?.addEventListener("click", () => this.trySend("/claude "));
+    this.frontShutter?.addEventListener("click", () => {
+      const open = this.frontCard?.classList.toggle("unlocked") ?? false;
+      this.frontShutter?.setAttribute("aria-expanded", open ? "true" : "false");
+      this.modelsStatus.textContent = open ? "Inspecting" : "Sealed";
+    });
+    this.frontCard?.addEventListener("mouseenter", () => {
+      if (!this.frontCard?.classList.contains("unlocked")) {
+        this.modelsStatus.textContent = "Inspecting";
+      }
+    });
+    this.frontCard?.addEventListener("mouseleave", () => {
+      if (!this.frontCard?.classList.contains("unlocked")) {
+        this.modelsStatus.textContent = "Sealed";
+      }
+    });
     this.renderVoiceButton();
     this.renderMuteButton();
+  }
+
+  /** Vendor names stay off the glass unless Front is open. Tools keep
+   *  their own labels because those are capabilities, not models. */
+  static publicLabel(label: string): string {
+    const key = label.replace(/[[\]]/g, "").toLowerCase().replace(/\s+/g, "-");
+    const tools = new Set([
+      "calendar", "notes", "email", "github", "youtube", "drive", "cal",
+      "spotify", "files", "shell", "screen", "browser", "location", "call", "news",
+    ]);
+    if (tools.has(key)) return label;
+    if (key === "claude-code" || key === "agent") return "[Agent]";
+    return "[Max]";
   }
 
   private trySend(prefix = ""): void {
@@ -279,12 +315,33 @@ export class UI {
       this.modelRoles.appendChild(row);
     }
 
-    const chosen = models.filter((m) => Object.values(roles).includes(m.id));
-    const cloud = chosen.filter((m) => !m.local);
-    this.modelsStatus.textContent = cloud.length
-      ? [...new Set(cloud.map((m) => m.label.split(" ")[0]))].join(" + ")
-      : "Local";
-    this.modelsStatus.classList.toggle("cloud", cloud.length > 0);
+    const inspecting = Boolean(
+      this.frontCard?.classList.contains("unlocked")
+      || this.frontCard?.matches(":hover")
+      || this.frontCard?.contains(document.activeElement)
+    );
+    this.modelsStatus.textContent = inspecting ? "Inspecting" : "Sealed";
+    this.modelsStatus.classList.remove("cloud");
+  }
+
+  setMemory(facts: string[], style: string[] = []): void {
+    if (!this.memoryFacts || !this.memoryStatus) return;
+    this.memoryFacts.replaceChildren();
+    const items = [...facts, ...style.map((s) => s)];
+    if (!items.length) {
+      const empty = document.createElement("li");
+      empty.className = "memory-empty";
+      empty.textContent = "Nothing stored yet. Say remember this…";
+      this.memoryFacts.appendChild(empty);
+      this.memoryStatus.textContent = "Empty";
+      return;
+    }
+    for (const fact of items.slice(0, 12)) {
+      const li = document.createElement("li");
+      li.textContent = fact;
+      this.memoryFacts.appendChild(li);
+    }
+    this.memoryStatus.textContent = String(items.length);
   }
 
   /** Microphone state, as reported by the voice loop actually opening or
@@ -296,8 +353,8 @@ export class UI {
     this.micBtn.classList.toggle("off", muted);
     this.micLabel.textContent = muted ? "Mic Off" : "Mic On";
     this.micBtn.title = muted
-      ? "Microphone is closed — Orin hears nothing. Click to listen again."
-      : "Privacy: close the microphone completely — Orin stops listening";
+      ? "Microphone is closed — Max hears nothing. Click to listen again."
+      : "Privacy: close the microphone completely — Max stops listening";
     document.documentElement.dataset.mic = muted ? "off" : "on";
   }
 
@@ -352,10 +409,11 @@ export class UI {
     this.setAwaitingReply(false);
     const el = document.createElement("div");
     el.className = "msg msg-reply";
-    el.dataset.backend = this.backendKey(label);
+    const face = UI.publicLabel(label);
+    el.dataset.backend = this.backendKey(face);
     const labelEl = document.createElement("span");
     labelEl.className = "msg-label";
-    labelEl.textContent = label;
+    labelEl.textContent = face;
     const textEl = document.createElement("span");
     textEl.className = "msg-text";
     el.appendChild(labelEl);
@@ -371,7 +429,7 @@ export class UI {
   // dump their full reply into the DOM instantly, which read as "typed
   // ahead of" the TTS audio rather than alongside it. This paces the
   // reveal at a fixed rate approximating natural speech, so text lands on
-  // screen roughly in step with Orin actually saying it. Streamed Ollama
+  // screen roughly in step with Max actually saying it. Streamed Ollama
   // replies (appendReplyChunk) already arrive incrementally in real
   // generation time and are left alone — they don't need a synthetic pace.
   private static readonly TYPE_CHARS_PER_SEC = 16;
@@ -425,16 +483,20 @@ export class UI {
   // Mac's speakers directly and never reaches the browser, so there's no
   // real audio duration here to sync against — this is an estimate.
   appendVoiceTurn(role: "user" | "assistant", label: string, text: string): void {
+    const key = `${role}:${label}:${text}`;
+    if (key === this.lastVoiceKey) return;
+    this.lastVoiceKey = key;
     if (role === "user") {
       this.appendUserMessage(text);
       return;
     }
     const el = document.createElement("div");
     el.className = "msg msg-reply";
-    el.dataset.backend = this.backendKey(label);
+    const face = UI.publicLabel(label);
+    el.dataset.backend = this.backendKey(face);
     const labelEl = document.createElement("span");
     labelEl.className = "msg-label";
-    labelEl.textContent = label;
+    labelEl.textContent = face;
     const textEl = document.createElement("span");
     textEl.className = "msg-text";
     el.appendChild(labelEl);
@@ -452,14 +514,16 @@ export class UI {
   // and its TTS clip are both ready. ---
 
   private streamTextEl: HTMLElement | null = null;
+  private lastVoiceKey = "";
 
   beginReplyStream(label: string): void {
     const el = document.createElement("div");
     el.className = "msg msg-reply";
-    el.dataset.backend = this.backendKey(label);
+    const face = UI.publicLabel(label);
+    el.dataset.backend = this.backendKey(face);
     const labelEl = document.createElement("span");
     labelEl.className = "msg-label";
-    labelEl.textContent = label;
+    labelEl.textContent = face;
     const textEl = document.createElement("span");
     textEl.className = "msg-text";
     el.appendChild(labelEl);
@@ -532,7 +596,7 @@ export class UI {
   }
 
   private setStatusFromLabel(): void {
-    // A completed turn in an active voice session means Orin is ready for
+    // A completed turn in an active voice session means Max is ready for
     // the next utterance, not idle and waiting for another wake phrase.
     this.setStatus(this.voiceRunning ? "listening" : "idle");
   }
@@ -549,7 +613,7 @@ export class UI {
 
   setConnectionState(connected: boolean): void {
     this.banner.classList.toggle("hidden", connected);
-    this.banner.textContent = "Disconnected from Orin bridge — reconnecting…";
+    this.banner.textContent = "Disconnected from Max bridge — reconnecting…";
     this.connected = connected;
     if (!connected) this.setStatus("offline");
     // Every command in the rail is a message to the bridge, so with the
@@ -588,7 +652,7 @@ export class UI {
   }
 
   setBackendReadout(label: string): void {
-    this.readoutBackend.textContent = label;
+    this.readoutBackend.textContent = UI.publicLabel(label);
   }
 
   setAudioLevel(amplitude: number): void {

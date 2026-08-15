@@ -1,6 +1,6 @@
 // Decodes and plays TTS audio the bridge forwards from Piper, and exposes
 // real-time amplitude from a Web Audio AnalyserNode so the orb can react to
-// actual audio energy while Orin is speaking (not a fake/synthetic pulse).
+// actual audio energy while Max is speaking (not a fake/synthetic pulse).
 
 export class AudioPlayer {
   private ctx: AudioContext;

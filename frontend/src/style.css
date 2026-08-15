@@ -1,4 +1,4 @@
-/* Orin HUD — electric-blue holographic interface.
+/* Max HUD — electric-blue holographic interface.
    Palette and density follow the reference poster: cool blue on near-black,
    layered reticle around a glowing core, dense telemetry cards, icon tier
    row. Every value shown is real (analyser audio, backend labels, session
@@ -489,7 +489,7 @@ body {
 
 /* ── Now Playing (Spotify) ──────────────────────────────────────────────
    Reuses the same card/meter language as the rest of the HUD rather than
-   Spotify's own green branding — this is Orin reporting real playback
+   Spotify's own green branding — this is Max reporting real playback
    state, not an embedded Spotify widget. */
 .spotify-now-playing {
   display: flex;
@@ -893,8 +893,8 @@ body {
 .msg-reply[data-backend="shell"] { border-left-color: var(--red); }
 .msg-reply[data-backend="shell"] .msg-label { color: var(--red); text-shadow: 0 0 8px rgba(255, 77, 94, 0.4); }
 
-.msg-reply[data-backend="claude-code"] { border-left-color: var(--magenta); }
-.msg-reply[data-backend="claude-code"] .msg-label { color: var(--magenta); text-shadow: 0 0 8px rgba(217, 70, 239, 0.4); }
+.msg-reply[data-backend="agent"] { border-left-color: var(--magenta); }
+.msg-reply[data-backend="agent"] .msg-label { color: var(--magenta); text-shadow: 0 0 8px rgba(217, 70, 239, 0.4); }
 
 .msg-text {
   color: var(--text);
@@ -1082,7 +1082,7 @@ body {
 
 /* ── Status theming ──────────────────────────────────────────────────────
    ui.setStatus() stamps the current state on <html>, so the whole HUD can
-   answer "what is Orin doing right now" at a glance from across the
+   answer "what is Max doing right now" at a glance from across the
    room — the core caption, the level arc and the corner brackets all
    shift together instead of only the small status dot changing. */
 
@@ -1162,11 +1162,91 @@ html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
   .cmd-primary { padding: 14px 12px; }
 }
 
-/* ── Model picker ────────────────────────────────────────────────────────
-   Which model answers is a live setting, so it lives in the rail next to
-   the other controls rather than in a config file the user has to find.
-   One row per role: the spoken loop wants the fastest model available, a
-   typed question usually wants the best one. */
+/* ── Front (model picker, sealed by default) ─────────────────────────────
+   The catalog is a shoulder-surf leak. The card is labeled Front and
+   stays shuttered until the pointer (or a click-to-pin) is on it. */
+
+#front-card {
+  position: relative;
+  min-height: 118px;
+}
+
+.front-shutter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 28px;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  background:
+    repeating-linear-gradient(
+      -32deg,
+      rgba(0, 18, 40, 0.0) 0 7px,
+      rgba(0, 212, 255, 0.045) 7px 8px
+    ),
+    radial-gradient(ellipse at 50% 20%, rgba(0, 80, 150, 0.35), rgba(0, 8, 20, 0.92) 70%);
+  overflow: hidden;
+  transition: opacity 0.22s ease, visibility 0.22s ease;
+}
+.front-shutter:focus-visible {
+  outline: 1px solid var(--blue);
+  outline-offset: -2px;
+}
+
+.front-iris {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  border: 1px solid var(--blue-dim);
+  background:
+    repeating-conic-gradient(from 8deg, rgba(0, 212, 255, 0.18) 0 12deg, transparent 12deg 24deg),
+    radial-gradient(circle at 50% 50%, rgba(0, 8, 20, 0.2) 28%, rgba(0, 30, 60, 0.85) 29% 62%, transparent 63%),
+    radial-gradient(circle at 50% 50%, transparent 38%, rgba(0, 212, 255, 0.12) 39% 41%, transparent 42%);
+  box-shadow: inset 0 0 16px rgba(0, 212, 255, 0.25), 0 0 18px rgba(0, 212, 255, 0.18);
+  pointer-events: none;
+}
+
+.front-shutter-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.front-shutter-kicker {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--blue-bright);
+  text-shadow: 0 0 10px var(--blue-dim);
+}
+.front-shutter-hint {
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+#front-card:hover .front-shutter,
+#front-card:focus-within .front-shutter,
+#front-card.unlocked .front-shutter {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
 
 #model-roles {
   display: flex;
@@ -1174,6 +1254,42 @@ html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
   gap: 6px;
   padding: 4px 12px 12px;
 }
+
+#memory-facts {
+  list-style: none;
+  margin: 0;
+  padding: 4px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 148px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--blue-dim) transparent;
+}
+#memory-facts li {
+  position: relative;
+  padding-left: 10px;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--text);
+}
+#memory-facts li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 6px var(--blue);
+}
+#memory-facts .memory-empty {
+  color: var(--text-dim);
+  padding-left: 0;
+}
+#memory-facts .memory-empty::before { display: none; }
 
 .model-row {
   display: flex;

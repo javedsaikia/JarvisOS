@@ -1,5 +1,5 @@
 // Now Playing widget — reflects real local Spotify.app state, pushed by
-// jarvis/bridge.py's _spotify_poll_loop over the same websocket as
+// max/bridge.py's _spotify_poll_loop over the same websocket as
 // everything else. Purely presentational; its only "polling" is a local
 // requestAnimationFrame tick that interpolates the progress bar between
 // the server's ~2s updates so it doesn't visibly stall between them.

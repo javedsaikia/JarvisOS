@@ -6,11 +6,11 @@
 # process launched by something else does not inherit your Terminal's
 # permission even though the code is identical.
 cd "$(dirname "$0")" || exit 1
-jarvis/.venv/bin/python3 - <<'PYEOF'
+max/.venv/bin/python3 - <<'PYEOF'
 import time
 
-from jarvis import hotkey
-from jarvis.config import load_config
+from max import hotkey
+from max.config import load_config
 
 cfg = load_config()
 

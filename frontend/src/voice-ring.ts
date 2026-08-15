@@ -1,7 +1,7 @@
 // Circular waveform wrapped around the core.
 //
 // The orb glows and swells with audio, but glow alone is a poor read of
-// "Orin is mid-sentence" — the eye needs shape change, not just
+// "Max is mid-sentence" — the eye needs shape change, not just
 // brightness. This draws the last ~2 seconds of measured amplitude as
 // bars around the circle, newest at the top, mirrored left/right so the
 // figure stays symmetric. Speech becomes a visible ripple travelling
@@ -10,7 +10,7 @@
 // Every bar is a real sample: browser-played audio comes from the same
 // AnalyserNode the orb uses, and voice-loop speech comes from the
 // envelope measured off the actual WAV being played on the Mac's
-// speakers (jarvis/voice_events.py). When nothing is playing, the samples
+// speakers (max/voice_events.py). When nothing is playing, the samples
 // really are zero and the ring really does go flat — no idle wiggle.
 
 export type RingStatus = "idle" | "listening" | "thinking" | "speaking" | "error" | "offline";

@@ -1,6 +1,6 @@
 .env
 *.env
-jarvis/.venv/
+max/.venv/
 frontend/node_modules/
 frontend/dist/
 __pycache__/
@@ -9,10 +9,15 @@ __pycache__/
 # Personal memory. conversation_log was already ignored; the archive is
 # the same content just older, profile.md is a written profile of the
 # user, and memory_state is local bookkeeping. This repo is public.
-jarvis/memory/conversation_log.jsonl
-jarvis/memory/conversation_archive.jsonl
-jarvis/memory/profile.md
-jarvis/memory/memory_state.json
+max/memory/conversation_log.jsonl
+max/memory/conversation_archive.jsonl
+max/memory/facts.md
+max/memory/profile.md
+max/memory/memory_state.json
 .claude/settings.local.json
 .claude/*.lock
-jarvis/browser_profile/
+max/browser_profile/
+max/.composio_session.json
+# Live prefs: phone number, Composio user id, local model picks.
+# The committed template is max/config.example.json.
+max/config.json
