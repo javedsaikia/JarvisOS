@@ -559,6 +559,26 @@ captured, so "hey Orin, what's the weather" needs no second recording —
 the same audio is reused, which is quicker overall than waking and then
 listening again. Saying just "Hey Orin" still chimes and waits, as before.
 
+### Stopping it
+
+**"Stop Orin"** (or "Orin, stop" / "Orin, be quiet") cuts a reply off
+mid-sentence, cancels whatever tool is running, and stands by quietly —
+it does not then sit there waiting for a command, which is the difference
+between stopping and stopping-then-staring-at-you.
+
+The name is required, deliberately. This is matched against audio picked
+up *while Orin is talking*, and this machine has no echo cancellation, so
+a bare "stop" would let Orin interrupt itself the moment it said a
+sentence containing the word — verified: "I'll stop the music for you
+now", spoken by Orin into its own mic, correctly does nothing. Orin never
+says its own name followed by "stop".
+
+Said when Orin is *not* talking, "stop" on its own still works and closes
+the conversation window. One exception, which was a real bug: "stop the
+music" (and the song/track/playback/timer variants) is a command about
+that thing, so it now reaches the Spotify pause path instead of being
+swallowed as "be quiet".
+
 **Going back to a trained model** is a config flip, not a code change:
 
 ```json
@@ -620,9 +640,16 @@ Limitations:
   `faster-whisper` aren't in system Python) — always launch with
   `jarvis/.venv/bin/python3 -m jarvis.voice_loop`, not plain `python3`.
 - The wake phrase is matched from a transcript, so it fires when you stop
-  speaking rather than mid-phrase, and an unusual name will be misheard in
-  ways the shipped spelling list may not cover — add what you actually see
-  in the log to `NAME_MISHEARINGS` (`jarvis/wake_phrase.py`).
+  speaking rather than mid-phrase. "Hey Orin" is the reliable form:
+  addressing it by bare name ("Orin, check my calendar") works when the
+  speech-to-text hears the name, but it sometimes swallows a leading
+  proper noun entirely, in which case nothing wakes.
+- Whatever the matcher accepts as the name is stripped from the command
+  before it reaches the model — including spellings nobody has seen yet.
+  That fixed a live failure where "Orin, I am really depressed" arrived as
+  "Kiren, ..." and Orin spent the rest of the conversation calling its
+  user Kiren. New mishearings can also be added to `NAME_MISHEARINGS`
+  (`jarvis/wake_phrase.py`) so the follow-up handling knows them too.
 - Barge-in is phrase-gated: say the wake phrase (or press push-to-talk)
   to interrupt a reply. It is deliberately not volume-gated — this machine
   has no echo cancellation, so a loudness threshold cuts Orin off on the

@@ -95,7 +95,19 @@ WAKE_LISTEN_SECONDS = 10.0
 # not be the whole thing. SHUTDOWN is checked first in run() and `break`s
 # immediately, so "stop listening" is claimed by SHUTDOWN_RE before
 # INTERRUPT_RE's bare "stop" ever gets a chance to also match it.
-INTERRUPT_RE = re.compile(r"\b(?:stop(?:\s+or[ie]n)?|or[ie]n\s+stop|be\s+quiet|quiet|silence)\b")
+INTERRUPT_RE = re.compile(
+    r"\b(?:stop(?:\s+(?:it|that|talking))?|be\s+quiet|quiet|silence|shut\s+up|enough)\b")
+
+# "Stop" with an object is a command about that object, not an interrupt.
+# Checked before INTERRUPT_RE, because the interrupt check happens before
+# routing: without this, "stop the music" was swallowed as "be quiet" and
+# never reached the Spotify pause path it matches in router.py — the
+# music kept playing. "Don't stop" is here for the obvious reason.
+_NOT_AN_INTERRUPT_RE = re.compile(
+    r"\b(?:do\s*n'?t|dont|never)\s+stop\b"
+    r"|\bstop\s+(?:the\s+|my\s+|this\s+)?"
+    r"(?:music|song|track|playback|spotify|player|timer|alarm|recording|sharing)\b"
+)
 SHUTDOWN_RE = re.compile(r"\b(?:stop\s+listening|quit|exit|shutdown|go\s+to\s+sleep)\b")
 
 # cli.process_turn's /hindi and /assamese routing needs a literal slash
@@ -184,6 +196,24 @@ def _is_bare_wake_phrase(text: str) -> bool:
     phrase to genuinely start a fresh conversation is unaffected.
     """
     return _normalize_for_compare(text) in _BARE_WAKE_PHRASES
+
+
+def _strip_matched_name(text: str, token: str) -> str:
+    """Remove the exact word the detector accepted as our name.
+
+    The spelling list can only cover mishearings someone has already seen.
+    This covers the rest: if the matcher decided a word was the name, that
+    word is the name, and it must not reach the model as if the user had
+    introduced themselves.
+    """
+    if not token:
+        return text
+    pattern = re.compile(
+        rf"^(?:hey|hi|hej|hello|ok|okay)?\s*{re.escape(token)}\b[!,.?]*\s*",
+        re.IGNORECASE,
+    )
+    stripped = pattern.sub("", text.strip(), count=1)
+    return stripped or text
 
 
 def _strip_leading_wake_phrase(text: str) -> str:
@@ -443,6 +473,11 @@ class VoiceLoop:
         # kept turning on and off. A deadline that persists across empty
         # attempts and only expires after real inactivity fixes that.
         self.conversation_active_until: float | None = None
+        # Set by the barge-in watcher when the user said "stop <name>".
+        # Distinct from a wake-word barge-in, which means "listen to me
+        # now"; a stop means "be quiet", so the loop must not immediately
+        # open a listening window and wait for a command that isn't coming.
+        self._stop_requested = False
         self._barge_frames: deque[np.ndarray] = deque(maxlen=12)
         self._barge_frames_lock = threading.Lock()
         # Two ways to be woken, same interface (reset/predict) so nothing
@@ -666,7 +701,20 @@ class VoiceLoop:
                     cli.shell.cancel_current()
                 stop_event.set()
                 return
-            score = self.wake_model.predict(frame).get(self.wake_key, 0.0)
+            if self.wake_mode == "phrase":
+                # Only here: "stop Orin" while it is talking or working has
+                # to land immediately, without waiting for a turn to end.
+                score = self.wake_model.predict(frame, include_stop=True).get(self.wake_key, 0.0)
+                if score > WAKE_THRESHOLD and self.wake_model.last_match_kind == "stop":
+                    print("(Stop heard — stopping and standing by.)")
+                    if processing_active is not None and processing_active.is_set():
+                        cli.claude_handoff.cancel_current()
+                        cli.shell.cancel_current()
+                    self._stop_requested = True
+                    stop_event.set()
+                    return
+            else:
+                score = self.wake_model.predict(frame).get(self.wake_key, 0.0)
             processing = processing_active is not None and processing_active.is_set()
             if not playback_active.is_set() and not processing:
                 # This thread starts before the response is ready, so that
@@ -1204,6 +1252,8 @@ class VoiceLoop:
             self._force_wake_listen = True
             return last_reply_text
 
+        if self.wake_mode == "phrase":
+            text = _strip_matched_name(text, self.wake_model.last_match_token)
         text = _strip_leading_wake_phrase(text)
 
         if last_reply_text and _looks_like_self_echo(text, last_reply_text):
@@ -1213,13 +1263,15 @@ class VoiceLoop:
         normalized = _normalize_for_compare(text)
         if SHUTDOWN_RE.search(normalized):
             raise _VoiceLoopShutdown()
-        if INTERRUPT_RE.search(normalized):
+        if INTERRUPT_RE.search(normalized) and not _NOT_AN_INTERRUPT_RE.search(normalized):
             # "Stop" used to be lumped in with the shutdown phrases
             # above, which meant saying it killed the whole voice
             # loop process — you'd have to restart Orin just to
             # get it to stop talking. This just cancels the current
             # turn and goes back to listening.
-            print("(Stopping — still listening, just not talking.)\n")
+            print("(Stopping — standing by. Say the name when you need me.)\n")
+            self.conversation_active_until = None
+            self._force_wake_listen = False
             return last_reply_text
 
         barge_event = threading.Event()
@@ -1304,7 +1356,16 @@ class VoiceLoop:
         # of quiet/missed attempts in between, unlike the old
         # single-shot flag this replaced.
         window = self.cfg.get("voice_conversation_window_seconds", 180)
-        self.conversation_active_until = time.monotonic() + window
+        if self._stop_requested:
+            # "Stop Orin" means be quiet, not "I'm about to say something
+            # else". Closing the window here is the difference between
+            # stopping and stopping-then-staring-at-you-expectantly; the
+            # user can reopen it any time by saying the name again.
+            self._stop_requested = False
+            self.conversation_active_until = None
+            self._force_wake_listen = False
+        else:
+            self.conversation_active_until = time.monotonic() + window
         spoken_done_at = time.perf_counter()
         # ttfw (time to first word) is the number that actually describes
         # how responsive this feels; the old single "tts=" figure lumped it

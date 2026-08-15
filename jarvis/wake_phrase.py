@@ -69,6 +69,13 @@ LEAD_WORDS = {"hey", "hi", "hello", "ok", "okay", "hey there", "yo"}
 # "Hey Orin" across models: Orrin, Arin, Oren, Orange, Auring, "or in".
 # Most of that spread is covered by the similarity test below; these are
 # the ones that are too far off for it and too specific to be dangerous.
+# Words that mean "stop what you are doing", when said *with the name*.
+# The name is required on purpose: this is matched against speech picked
+# up while Orin is talking, and this machine has no echo cancellation, so
+# a bare "stop" would let Orin interrupt itself the moment it said a
+# sentence containing the word. Orin never says its own name plus "stop".
+STOP_WORDS = {"stop", "quiet", "enough", "shush", "shut"}
+
 NAME_MISHEARINGS = {
     "orin": [
         # Close enough that the similarity test would catch them anyway,
@@ -78,6 +85,11 @@ NAME_MISHEARINGS = {
         # Too far off for similarity, specific enough to be safe after a
         # lead word: all measured renderings of one synthesized "Hey Orin".
         "orange", "auring", "auren", "awring", "aoring", "or in", "o rin",
+        # Seen live, and the reason this list matters beyond waking: the
+        # name at the start of a sentence came back as "Kiren", the loop
+        # passed it through as ordinary words, and the model reasonably
+        # concluded that was the user's name and started using it.
+        "kiren", "kiran", "kieran", "keiran", "koren", "corin", "chiran",
     ],
 }
 
@@ -164,6 +176,10 @@ class PhraseWake:
         # of asking the user to repeat a command they already said.
         self.pending_audio: np.ndarray | None = None
         self.last_transcript = ""
+        # "wake" or "stop" — see predict(include_stop=True).
+        self.last_match_kind = ""
+        # The literal token(s) accepted as the name in the last match.
+        self.last_match_token = ""
 
     def reset(self) -> None:
         self.vad.reset()
@@ -185,6 +201,12 @@ class PhraseWake:
         )
 
     def _name_at(self, tokens: list[str], i: int, loose: bool = True) -> bool:
+        """Sets last_match_token to whatever matched, so the caller can
+        remove exactly that from the command text — including a spelling
+        nobody has ever seen before. A mishearing that gets through the
+        matcher must not survive into the prompt: seen live, "Orin, I am
+        really depressed" arrived as "Kiren, ..." and the model reasonably
+        started calling the user Kiren."""
         """Is the name at position `i`, as one token or split across two?
 
         Whisper sometimes writes an unfamiliar name as two real words —
@@ -195,6 +217,7 @@ class PhraseWake:
         if i >= len(tokens):
             return False
         if self._is_name(tokens[i], loose):
+            self.last_match_token = tokens[i]
             return True
         # The joined pair is matched *exactly*, never fuzzily. Fuzzy on a
         # concatenation is far too generous — "the orange" joins to
@@ -202,7 +225,10 @@ class PhraseWake:
         # the assistant on a sentence about fruit juice.
         joined = tokens[i] + tokens[i + 1] if i + 1 < len(tokens) else ""
         names = self.strict_names + self.loose_names if loose else self.strict_names
-        return bool(joined) and joined in names
+        if joined and joined in names:
+            self.last_match_token = f"{tokens[i]} {tokens[i + 1]}"
+            return True
+        return False
 
     def _speech_probability(self, frame: np.ndarray) -> float:
         """Highest VAD probability across the 512-sample chunks in `frame`.
@@ -255,9 +281,32 @@ class PhraseWake:
                 return True
         return False
 
-    def predict(self, frame: np.ndarray) -> dict[str, float]:
+    def _is_stop(self, transcript: str) -> bool:
+        """True for "stop Orin" / "Orin, stop" / "Orin be quiet".
+
+        Requires the name next to the stop word — see STOP_WORDS. Checked
+        only where the caller asks for it (barge-in), never when idle.
+        """
+        tokens = _normalize(transcript).split()
+        for i, token in enumerate(tokens):
+            if token not in STOP_WORDS:
+                continue
+            # The name within two tokens either side covers "stop orin",
+            # "orin stop", "orin, please stop" and "stop it orin".
+            for j in (i - 2, i - 1, i + 1, i + 2):
+                if 0 <= j < len(tokens) and self._is_name(tokens[j], loose=True):
+                    return True
+        return False
+
+    def predict(self, frame: np.ndarray, include_stop: bool = False) -> dict[str, float]:
         """Feed one frame. Returns {key: 1.0} on the frame that completes a
-        matching utterance, {key: 0.0} otherwise."""
+        matching utterance, {key: 0.0} otherwise.
+
+        `include_stop` also accepts "stop <name>" as a match, and records
+        which kind it was in `last_match_kind` — used by barge-in, where
+        "stop talking" and "wake up, I have something to say" want the
+        same interruption but different behaviour afterwards.
+        """
         speaking = self._speech_probability(frame) >= VAD_SPEECH_THRESHOLD
         frame_seconds = len(frame) / SAMPLE_RATE
 
@@ -294,14 +343,24 @@ class PhraseWake:
         started = time.monotonic()
         transcript = self._transcribe(audio)
         self.last_transcript = transcript
-        if not self._matches(transcript):
+
+        kind = ""
+        self.last_match_token = ""
+        if include_stop and self._is_stop(transcript):
+            kind = "stop"
+        elif self._matches(transcript):
+            kind = "wake"
+        if not kind:
             return {self.key: 0.0}
+        self.last_match_kind = kind
 
         print(
-            f"  (wake: heard {transcript!r} in {time.monotonic() - started:.2f}s)",
+            f"  ({kind}: heard {transcript!r} in {time.monotonic() - started:.2f}s)",
             flush=True,
         )
-        self.pending_audio = audio
+        # A stop is an instruction on its own, not the start of a command,
+        # so there is nothing to hand on to the turn.
+        self.pending_audio = None if kind == "stop" else audio
         return {self.key: 1.0}
 
     def take_pending_audio(self) -> np.ndarray | None:
