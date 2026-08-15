@@ -11,7 +11,7 @@ from typing import Callable
 from jarvis import claude_handoff, location_client, maps_client, ollama_client, router, sarvam_client, tts
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
-from jarvis import llm, reflection
+from jarvis import llm, reflection, wake_phrase
 from jarvis.persona import build_system_prompt
 from jarvis.tools import browser, calendar, calling, files, location, notes, parsing, registry, shell, spotify, vision
 
@@ -55,6 +55,25 @@ def speak_response(text: str, cfg: dict, stop_event=None) -> bool:
         return True
 
 
+def _misheard_names(cfg: dict) -> tuple[str, ...]:
+    """Spellings the speech-to-text produces for Orin's own wake name.
+
+    Comes from the same table the wake detector matches on, so there is
+    one list to maintain: anything Orin will answer to is also something
+    the model is told never to mistake for the user's name.
+    """
+    names: list[str] = []
+    for phrase in cfg.get("wake_phrases") or ["hey orin"]:
+        name = phrase.strip().split()[-1].lower() if phrase.strip() else ""
+        if not name:
+            continue
+        names.append(name)
+        names.extend(wake_phrase.NAME_MISHEARINGS.get(name, []))
+    # Two-word renderings ("or in") read as noise in a prompt; the single
+    # words are what a model would actually copy.
+    return tuple(dict.fromkeys(n for n in names if " " not in n))
+
+
 def handle_ollama(
     user_text: str,
     cfg: dict,
@@ -66,7 +85,7 @@ def handle_ollama(
     model_role: str = "chat",
     used_entry: dict | None = None,
 ) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block())
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
     messages = [{"role": "system", "content": system_prompt}]
     # Excludes Sarvam turns — seen live: Ollama's small English-tuned model
     # produced garbled Hindi-ish gibberish (not just imitation, actual
@@ -133,7 +152,7 @@ def handle_sarvam(
     # explicitly chosen for Hindi/Assamese — the model won't infer the
     # target language just from being routed here.
     language_name = {"hi-IN": "Hindi", "as-IN": "Assamese"}.get(language_code, language_code)
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block())
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
     system_prompt += f"\n\nRespond in {language_name}, regardless of what language the user writes in."
     messages = [{"role": "system", "content": system_prompt}]
     for turn in mem.recent_turns(recent_turns_limit):
@@ -307,7 +326,7 @@ def handle_shell(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_c
 
 
 def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive: bool, confirm_fn=text_confirm) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block()) + "\n\n" + registry.build_tool_prompt()
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg)) + "\n\n" + registry.build_tool_prompt()
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
 
     try:
@@ -427,7 +446,7 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
         return "Browser control is disabled in config."
 
     system_prompt = (
-        build_system_prompt(cfg["user_name"], mem.context_block())
+        build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
         + "\n\n"
         + registry.build_tool_prompt(registry.BROWSER_TOOL_SCHEMAS)
     )

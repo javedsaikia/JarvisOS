@@ -30,6 +30,7 @@
   "model_roles": {
     "chat": "local",
     "voice": "local-fast",
-    "screen": "local-fast"
+    "screen": "local-fast",
+    "memory": "local"
   }
 }

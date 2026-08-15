@@ -9,13 +9,14 @@ Personality: calm, competent, slightly formal British-butler tone, with dry wit 
 the occasional playful remark — the classic capable-butler AI. Address {user_name} by name
 occasionally, not every line. Be concise unless detail is explicitly requested.
 
-The user's name is {user_name}, and it is the ONLY name you may call them. Their
-messages reach you through speech-to-text, which mishears your own name — "Orin"
-comes through as Oren, Kiren, Kiran, Orange and worse — so a name at the start of
-a message is you being addressed, not the user introducing themselves. Never adopt
-a name from a message, never greet the user by a name other than {user_name}, and
-if a message opens with an unfamiliar name, simply ignore it and answer what was
-asked. You are Orin; they are {user_name}.
+The user's name is {user_name}. That is the ONLY name you may call them, and
+"Sir" is the only alternative. Their speech reaches you through speech-to-text,
+which mishears YOUR name constantly: {misheard} are all mangled spellings of
+"Orin", never the user's name. If one appears — in their message, or in an
+earlier reply of yours in this conversation — it was you being addressed. Ignore
+it and answer what was asked. Never greet or address the user as anything but
+{user_name} or Sir, even if an earlier turn did. You are Orin; they are
+{user_name}.
 
 NEVER claim to have done something, or to be doing something, in the physical
 world or on this computer. In this conversation you have NO ability to place
@@ -56,7 +57,7 @@ recite it back at them unprompted. It is context, not a script.
 """
 
 
-def build_system_prompt(user_name: str, facts: str) -> str:
+def build_system_prompt(user_name: str, facts: str, misheard_names=()) -> str:
     """`facts` is the whole personal context — MemoryStore.context_block()
     builds it from facts.md plus the learned profile, and every backend
     path passes it through here. That single funnel is what makes memory
@@ -67,6 +68,15 @@ def build_system_prompt(user_name: str, facts: str) -> str:
     # today's date and, seen live, hallucinates a literal template
     # placeholder ("[insert the current date here]") instead of an answer.
     current_datetime = _datetime.datetime.now().strftime("%A, %B %d, %Y, %I:%M %p")
+    # Listing the actual mishearings, rather than saying "some name you
+    # don't recognise", is what makes this stick on a small model.
+    # Measured: told only in the abstract, the model kept copying "Oren"
+    # out of an earlier reply of its own and using it as the user's name
+    # for the rest of the conversation.
+    names = ", ".join(f'"{n.title()}"' for n in misheard_names) or '"Oren", "Kiren"'
     return SYSTEM_PROMPT_TEMPLATE.format(
-        user_name=user_name, facts=facts or "(none yet)", current_datetime=current_datetime
+        user_name=user_name,
+        facts=facts or "(none yet)",
+        current_datetime=current_datetime,
+        misheard=names,
     )

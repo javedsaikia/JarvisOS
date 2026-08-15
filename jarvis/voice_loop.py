@@ -176,7 +176,8 @@ def configure_wake_phrases(phrases: list[str]) -> None:
     _BARE_WAKE_PHRASES = bare
     escaped = "|".join(sorted((re.escape(n) for n in names), key=len, reverse=True))
     _LEADING_WAKE_PHRASE_RE = re.compile(
-        rf"^(?:{'|'.join(leads)})?\s*(?:{escaped})\b[!,.]?\s*", re.IGNORECASE
+        rf"^(?:(?:{'|'.join(leads)})[,!.]?\s*)?(?:{escaped})\b[!,.?]*\s*",
+        re.IGNORECASE,
     )
 
 
@@ -208,12 +209,19 @@ def _strip_matched_name(text: str, token: str) -> str:
     """
     if not token:
         return text
+    # The punctuation between lead word and name matters: speech-to-text
+    # writes "Hey, Oren." with a comma, and a pattern that only allowed
+    # whitespace there silently matched nothing — which is how a name-only
+    # utterance reached the model intact.
     pattern = re.compile(
-        rf"^(?:hey|hi|hej|hello|ok|okay)?\s*{re.escape(token)}\b[!,.?]*\s*",
+        rf"^(?:(?:hey|hi|hej|hello|ok|okay)[,!.]?\s*)?{re.escape(token)}\b[!,.?]*\s*",
         re.IGNORECASE,
     )
-    stripped = pattern.sub("", text.strip(), count=1)
-    return stripped or text
+    # Deliberately no `or text` fallback: an utterance that was *only*
+    # the name must come back empty so the caller can treat it as a wake
+    # rather than a command. Returning the original text here is what put
+    # "Hey, Oren" in front of the model as something to reply to.
+    return pattern.sub("", text.strip(), count=1).strip()
 
 
 def _strip_leading_wake_phrase(text: str) -> str:
@@ -227,8 +235,7 @@ def _strip_leading_wake_phrase(text: str) -> str:
     literally starting with "Hail Jervis, run the command, sleep 30" ran
     `Hail` as the command and failed instead of ever running `sleep 30`.
     """
-    stripped = _LEADING_WAKE_PHRASE_RE.sub("", text.strip(), count=1)
-    return stripped or text
+    return _LEADING_WAKE_PHRASE_RE.sub("", text.strip(), count=1).strip()
 
 
 _ACK_TONE_PATH: str | None = None
@@ -559,6 +566,7 @@ class VoiceLoop:
         audio is playing out of the Mac's speakers via afplay, and no
         amount of stopping a WebAudio node touches it.
         """
+        self._interrupt_source = "the web UI's Stop button"
         self._ptt_interrupt = True
         self.trigger_wake()
 
@@ -570,6 +578,7 @@ class VoiceLoop:
         barge-in, so pressing the key while Orin is talking stops it and
         starts listening — the same gesture for "go" and "stop".
         """
+        self._interrupt_source = "Push-to-talk"
         self._ptt_interrupt = True
         self.trigger_wake()
 
@@ -731,7 +740,8 @@ class VoiceLoop:
                 self._barge_frames.append(frame)
             if getattr(self, "_ptt_interrupt", False):
                 self._ptt_interrupt = False
-                print("(Push-to-talk pressed — stopping and listening.)")
+                source = getattr(self, "_interrupt_source", "Push-to-talk")
+                print(f"({source} — stopping and listening.)")
                 if processing_active is not None and processing_active.is_set() and not playback_active.is_set():
                     cli.claude_handoff.cancel_current()
                     cli.shell.cancel_current()
@@ -1205,6 +1215,17 @@ class VoiceLoop:
         # speculative and should give up quickly. _force_wake_listen is set
         # when they called Orin by name mid-conversation, which is the
         # same explicit "I'm about to talk" signal as a fresh wake.
+        # An interrupt only counts while a turn is actually running. This
+        # flag is set from two places (push-to-talk, and the web UI's Stop
+        # button via SIGUSR2) and was only ever cleared by the barge-in
+        # watcher — so a press that arrived with no turn in flight sat
+        # there, and then killed the speech of the NEXT reply. Seen live:
+        # every turn logging "stopping and listening" straight after the
+        # user finished speaking, ttfw=n/a, speak=0.00s, and no audible
+        # answer at all. Clearing it here means only an interrupt during
+        # this turn can stop this turn.
+        self._ptt_interrupt = False
+
         pending = None
         if self.wake_mode == "phrase":
             pending = self.wake_model.take_pending_audio()
@@ -1291,6 +1312,18 @@ class VoiceLoop:
         if self.wake_mode == "phrase":
             text = _strip_matched_name(text, self.wake_model.last_match_token)
         text = _strip_leading_wake_phrase(text)
+
+        if not text.strip():
+            # Nothing left once the name came off: they called Orin and
+            # said nothing else. Seen live as "You said: Hey, Oren." ->
+            # "Good day to you too, Oren." — the stripper had a
+            # `stripped or original` fallback, so a name-only utterance
+            # was handed to the model verbatim, which then read the
+            # misheard name as the user's own and started using it.
+            print("(Just my name — listening for what you need.)\n")
+            self._play_ack_tone()
+            self._force_wake_listen = True
+            return last_reply_text
 
         if last_reply_text and _looks_like_self_echo(text, last_reply_text):
             print("(Ignoring — sounds like my own voice bleeding into the mic, not a new command.)\n")

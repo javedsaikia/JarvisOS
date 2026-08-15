@@ -81,7 +81,7 @@ NAME_MISHEARINGS = {
         # Close enough that the similarity test would catch them anyway,
         # but listed so the loop's follow-up matching — which compares
         # exactly, not fuzzily — knows them too.
-        "oren", "orrin", "arin", "arryn", "arring",
+        "oren", "orrin", "arin", "arryn", "arring", "oran", "orran", "auran",
         # Too far off for similarity, specific enough to be safe after a
         # lead word: all measured renderings of one synthesized "Hey Orin".
         "orange", "auring", "auren", "awring", "aoring", "or in", "o rin",
