@@ -456,6 +456,20 @@ class VoiceLoop:
             self.push_to_talk = hotkey.PushToTalk(combo, on_press=self._on_push_to_talk)
             if not self.push_to_talk.start():
                 self.push_to_talk = None
+
+        # Tap-to-wake, as opposed to hold-to-talk above. Same permission,
+        # separate listener: if this one can't start, push-to-talk is
+        # unaffected.
+        self.wake_hotkey = None
+        if cfg.get("wake_hotkey_mode", "double_tap") != "off":
+            self.wake_hotkey = hotkey.WakeHotkey(
+                mode=cfg.get("wake_hotkey_mode", "double_tap"),
+                key=cfg.get("wake_hotkey_key", hotkey.DEFAULT_WAKE_KEY),
+                combo=tuple(cfg.get("wake_hotkey_combo", hotkey.DEFAULT_WAKE_COMBO)),
+                on_wake=self._on_wake_hotkey,
+            )
+            if not self.wake_hotkey.start():
+                self.wake_hotkey = None
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
         self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
         self.wake_listen_seconds = cfg.get("voice_wake_listen_seconds", WAKE_LISTEN_SECONDS)
@@ -523,6 +537,17 @@ class VoiceLoop:
 
     def trigger_wake(self) -> None:
         self.wake_event.set()
+
+    def _on_wake_hotkey(self) -> None:
+        """Shortcut tapped: start a turn now, from wherever they are.
+
+        Deliberately not the push-to-talk path. Push-to-talk records for
+        exactly as long as the key is held; this is the same thing as
+        saying the wake phrase — Orin chimes and listens for one utterance
+        — so it goes through trigger_wake() and nothing else.
+        """
+        print("(Wake hotkey — listening.)", flush=True)
+        self.trigger_wake()
 
     def trigger_interrupt(self) -> None:
         """Stop talking / stop working, from outside this process.
@@ -626,10 +651,15 @@ class VoiceLoop:
         self.silence_rms_threshold = calibrated
         print(f'  barge-in: say "{self.wake_label()}" to interrupt '
               '(phrase-gated, not volume)')
+        if self.wake_hotkey is not None:
+            print(f"  wake hotkey: {self.wake_hotkey.describe()} to start a turn "
+                  "from any app")
         if self.push_to_talk is not None:
             print(f"  push-to-talk: hold {self.push_to_talk.describe()} and speak "
                   "(no wake word needed, works over music and noise)")
-            if not self.push_to_talk.saw_any_event:
+            if not self.push_to_talk.saw_any_event and (
+                self.wake_hotkey is None or not self.wake_hotkey.saw_any_event
+            ):
                 # pynput's listener starts fine without permission and then
                 # never receives anything, so say it out loud rather than
                 # letting the key appear to do nothing.

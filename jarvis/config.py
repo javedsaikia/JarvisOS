@@ -92,6 +92,23 @@ DEFAULTS = {
     # and room noise where the hands-free path is probabilistic.
     "push_to_talk_enabled": True,
     "push_to_talk_combo": ["ctrl", "alt"],
+    # Tap a shortcut to wake Orin, instead of holding one to talk (see
+    # jarvis/hotkey.py). Works from any app, so you never have to find the
+    # window or say the phrase.
+    #   "double_tap" — tap wake_hotkey_key twice, the way macOS dictation
+    #                  works. Collides with nothing: a lone modifier means
+    #                  nothing to any application.
+    #   "combo"      — a chord like ["ctrl", "alt", "space"]. pynput
+    #                  watches keys without consuming them, so the chord
+    #                  ALSO reaches whatever app has focus — pick one no
+    #                  app uses.
+    #   "off"        — no wake hotkey.
+    "wake_hotkey_mode": "double_tap",
+    # Right Command: the least-used modifier on an Apple keyboard, and not
+    # part of push-to-talk's Control+Option, so the two can't trip over
+    # each other.
+    "wake_hotkey_key": "cmd_r",
+    "wake_hotkey_combo": ["ctrl", "alt", "space"],
     "voice_silence_rms_threshold": 300,
     # Was 180 — seen live, a window that long meant any speech near the
     # mic (e.g. dictating a message to something else entirely) got picked

@@ -98,6 +98,9 @@ python3 -m jarvis.cli --once "what's on my calendar today"
 - `wake_mode` — `"phrase"` (default; spot any phrase with VAD + Whisper) or `"model"` (an openWakeWord detector). See [Wake phrase](#wake-phrase)
 - `wake_phrases` — what to say to wake it (default `["hey orin"]`); the last word is treated as the name and matched allowing for how speech-to-text mangles it
 - `wake_stt_model` — empty (default) shares the command model; set a size to load a separate, faster one for spotting
+- `wake_hotkey_mode` — `"double_tap"` (default), `"combo"` or `"off"`: tap a shortcut to start a turn from any app
+- `wake_hotkey_key` — which modifier to double-tap (default `"cmd_r"`, Right Command)
+- `wake_hotkey_combo` — the chord used when mode is `"combo"` (default `["ctrl", "alt", "space"]`)
 - `voice_wake_word` — only used when `wake_mode` is `"model"`: which openWakeWord pretrained model to load (default `"hey_jarvis"`)
 - `voice_stt_model` — faster-whisper model size for transcribing voice commands (default `"small.en"`)
 - `voice_context_turns` — how many recent turns the voice loop includes in the prompt; lower is faster
@@ -695,6 +698,38 @@ when you stop speaking. In exchange the whole utterance is already
 captured, so "hey Orin, what's the weather" needs no second recording —
 the same audio is reused, which is quicker overall than waking and then
 listening again. Saying just "Hey Orin" still chimes and waits, as before.
+
+### Wake hotkey
+
+**Double-tap Right Command** to wake Orin from any application. It chimes
+and listens for one utterance — exactly what saying the wake phrase does,
+without saying anything.
+
+Double-tapping a modifier is how macOS's own dictation shortcut works, and
+it is the one gesture that cannot collide with an application shortcut: a
+lone modifier press means nothing to any app, so nothing is stolen from
+whatever has focus. Right Command specifically because it is the
+least-used modifier on an Apple keyboard, and because it is not part of
+push-to-talk's Control+Option — so the two can never trip over each other.
+
+```json
+"wake_hotkey_mode": "double_tap",   // or "combo", or "off"
+"wake_hotkey_key": "cmd_r",         // any modifier, sided: cmd_r, alt_r, ctrl_l...
+"wake_hotkey_combo": ["ctrl", "alt", "space"]   // used when mode is "combo"
+```
+
+Chord mode works too, and accepts letters, digits and F-keys. One caveat
+decided the default: the listener *observes* keystrokes without consuming
+them, so a chord also reaches whatever app has focus —
+Control+Option+Space would wake Orin and type a space into your editor. A
+double-tapped modifier types nothing.
+
+Both shortcuts need the same **Input Monitoring** grant, and
+`./check_hotkey.sh` tests both, saying which one didn't register.
+
+So there are three ways to start a turn, suiting different moments: say
+"Hey Orin" from across the room, tap the shortcut while your hands are on
+the keyboard, hold Control+Option when there's music playing.
 
 ### Stopping it
 
