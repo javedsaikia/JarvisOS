@@ -208,6 +208,14 @@ SPOTIFY_PLAY_TRACK_PATTERNS = [
     r"\bplay\b.+\bin spotify\b",
     r"\bplay the (song|track)\b.+",
     r"\bput on\b.+\bspotify\b",
+    # Bare "play <something>" with no "on Spotify" — said live as "Play
+    # Pink Floyd High Hopes." It matched nothing, fell through to the
+    # model, and the model replied "Okay, I'm playing High Hopes by Pink
+    # Floyd on Spotify now" while nothing played. A hallucinated action is
+    # the worst possible outcome here, so the bare form has to route.
+    # SPOTIFY_PLAY_PATTERNS (generic "play some music") is checked first,
+    # so this only sees requests that name something.
+    r"\bplay\b\s+(?!some\b|the\b|any\b|music\b|something\b|anything\b)\S+",
 ]
 
 # Deterministic, not LLM-mediated — read-only informational, same tier as
@@ -255,6 +263,19 @@ NEARBY_PATTERNS = [
 # files", which is false, and teaches the user not to bother asking.
 # Checked AFTER the action groups, so "read my screen" still reads the
 # screen instead of describing the ability to.
+# Which model is answering is a setting, so it has an exact answer.
+# Asked live, the model replied "I'm based on OpenAI's GPT-4" and, on the
+# local model, "I am using an Apple MacBook Pro with M1 chip" — both
+# invented, and both about the one subject the code knows for certain.
+MODEL_QUESTION_PATTERNS = [
+    # Both word orders: "which model ARE YOU using" and "which model YOU
+    # ARE using" — the second is how it was actually asked out loud.
+    r"\b(which|what) (model|llm|ai)\b[^.?!]{0,30}\b(are you|you are|you.re|is this|do you|you.?ve got)\b",
+    r"\bwhat('s| is) (your|the) (model|llm|backend)\b",
+    r"\bare you (running|using) (on |a )?(local|groq|gemini|ollama|cloud)\b",
+    r"\bwho (made|built|trained) you\b",
+]
+
 CAPABILITY_PATTERNS = [
     r"\bwhat (can|do) you do\b",
     r"\bwhat are (your|the) (capabilities|abilities|features|tools)\b",
@@ -348,6 +369,10 @@ BROWSER_PATTERNS = [
     r"\bfill (in |out )?(the )?form\b",
     r"\bnavigate to\b",
     r"\bopen (this |the )?(url|website|webpage|link)\b",
+    # "can you open a browser?" — asked live, matched nothing, and the
+    # model denied having the ability at all.
+    r"\bopen (a |the )?browser\b",
+    r"\b(open|launch|start) (chrome|chromium|safari|firefox)\b",
     r"\btype\b.+\b(into|in) the\b",
     r"\bgo to\b.+\b(and|then)\b",
     # Bare "go to <url>" (no compound "and do X" clause) — seen live:
@@ -380,6 +405,12 @@ FILES_PATTERNS = [
     r"\bsearch (for |my )?(a |the )?files?\b",
     r"\bfind (a |the |my )?files?\b",
     r"\bsearch (my |the )?(desktop|documents|downloads)\b",
+    # "can you check my local files" — asked live, matched nothing, and
+    # the model answered "I don't actually have access to your personal
+    # files", which is false. Any phrasing that names files/folders plus
+    # a looking-at verb belongs here.
+    r"\b(check|look at|look through|browse|access|go through|see)\b[^.?!]{0,20}\b(my |the |local )*(files?|folders?|documents|directory|directories)\b",
+    r"\b(my|the|local) (files?|folders?)\b",
     # Ordinary phrasings that matched nothing: "what files do I have on my
     # Desktop", "do I have a file about taxes", "show me the contents of
     # README.md" (the existing rule needs the literal word "file" after
@@ -454,6 +485,7 @@ _TOOL_GROUPS = [
     ("call", "auto", [re.compile(p, re.IGNORECASE) for p in CALL_PATTERNS]),
     # After every action group above, so a request to DO something is
     # never answered with a description of being able to do it.
+    ("capabilities", "model", [re.compile(p, re.IGNORECASE) for p in MODEL_QUESTION_PATTERNS]),
     ("capabilities", "read", [re.compile(p, re.IGNORECASE) for p in CAPABILITY_PATTERNS]),
     # Checked before "files" — a request naming a literal command (e.g. "run
     # ls -la") must never fall through to the LLM-mediated files path.

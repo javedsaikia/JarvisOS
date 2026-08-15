@@ -28,9 +28,9 @@
     "alt"
   ],
   "model_roles": {
-    "chat": "local",
-    "voice": "local-fast",
-    "screen": "local-fast",
+    "chat": "groq-70b",
+    "voice": "groq-8b",
+    "screen": "groq-8b",
     "memory": "local"
   }
 }

@@ -124,9 +124,23 @@ def backend_name(entry: dict) -> str:
 # calling stream_callback with pieces as they arrive when it can.
 
 
+# Cloudflare sits in front of Groq's API and rejects requests that arrive
+# with no User-Agent — urllib doesn't send one, so every call came back
+# "HTTP 403: error code: 1010" and looked exactly like a rejected API key.
+# It cost a real debugging detour: the key was valid the whole time.
+# Identifying ourselves is also just good manners for an API client.
+_USER_AGENT = "Orin/1.0 (macOS; +https://github.com/javedsaikia/JarvisOS)"
+
+
 def _post(url: str, body: dict, headers: dict, timeout: int, stream: bool = False):
     request = urllib.request.Request(
-        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", **headers}
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+            **headers,
+        },
     )
     try:
         return urllib.request.urlopen(request, timeout=timeout)

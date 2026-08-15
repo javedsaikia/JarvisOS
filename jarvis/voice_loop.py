@@ -99,6 +99,10 @@ NO_SPEECH_BAIL_SECONDS = 3.0
 # stopped listening with no cue that it ever started. Field-tested
 # Whisper-assistant configs sit around 12s before returning to idle.
 WAKE_LISTEN_SECONDS = 10.0
+# How long after Orin stops speaking its own voice can still be arriving
+# at the microphone. Beyond this the room is quiet and anything heard is
+# the user, however much it happens to sound like the last reply.
+ECHO_WINDOW_SECONDS = 4.0
 # Word-boundary contains-match, not exact set membership — seen live:
 # exact matching missed "Hey stop!" (normalizes to "hey stop", which isn't
 # in the set) and sent it to Ollama as a normal query instead of
@@ -506,6 +510,8 @@ class VoiceLoop:
         # kept turning on and off. A deadline that persists across empty
         # attempts and only expires after real inactivity fixes that.
         self.conversation_active_until: float | None = None
+        # When Orin last stopped talking — the echo filter's time window.
+        self._last_speech_ended_at = 0.0
         # Set by the barge-in watcher when the user said "stop <name>".
         # Distinct from a wake-word barge-in, which means "listen to me
         # now"; a stop means "be quiet", so the loop must not immediately
@@ -1241,7 +1247,8 @@ class VoiceLoop:
             # is noise, and that matches how Siri/Alexa/Google behave too.
             self._play_ack_tone()
         return self._handle_turn_audio(
-            mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at
+            mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at,
+            woke_by_name=not already_in_conversation,
         )
 
     def _handle_turn_audio(
@@ -1251,6 +1258,7 @@ class VoiceLoop:
         already_in_conversation: bool,
         turn_start: float,
         wake_detected_at: float,
+        woke_by_name: bool = False,
     ) -> str:
         # Straight after a wake word the user has said they intend to
         # speak, so wait properly for them; a follow-up listen is
@@ -1367,7 +1375,31 @@ class VoiceLoop:
             self._force_wake_listen = True
             return last_reply_text
 
-        if last_reply_text and _looks_like_self_echo(text, last_reply_text):
+        # The echo filter only applies to speech that could physically BE
+        # an echo: Orin's voice reaching the mic while, or just after, it
+        # was speaking. Two guards, both learned from the log.
+        #
+        # Seen live: "Hey Oren, what's the weather in Bangalore?" asked
+        # four times in a row, every one discarded as an echo, because the
+        # previous reply was about the weather and shared most of its
+        # words. From the user's side Orin had simply gone deaf. A
+        # follow-up question naturally reuses the words of the answer it
+        # follows — that is what a conversation is — so word overlap alone
+        # can never be enough.
+        #
+        #   1. If they woke Orin by name for this turn, it is not an echo.
+        #      Saying the wake phrase is proof of intent; Orin's own voice
+        #      never contains it.
+        #   2. Otherwise it must arrive within ECHO_WINDOW_SECONDS of Orin
+        #      actually finishing speaking. Past that the speakers are
+        #      silent and there is nothing left to bleed through.
+        since_speech = time.monotonic() - getattr(self, "_last_speech_ended_at", 0.0)
+        could_be_echo = (
+            already_in_conversation
+            and not woke_by_name
+            and since_speech <= ECHO_WINDOW_SECONDS
+        )
+        if could_be_echo and last_reply_text and _looks_like_self_echo(text, last_reply_text):
             print("(Ignoring — sounds like my own voice bleeding into the mic, not a new command.)\n")
             return last_reply_text
 
@@ -1464,6 +1496,7 @@ class VoiceLoop:
             )
 
         barge_event.set()
+        self._last_speech_ended_at = time.monotonic()
         if barge_monitor is not None:
             barge_monitor.join(timeout=1)
         # A wake starts a conversational session. Every completed

@@ -27,14 +27,14 @@ export class UI {
   private transcript: HTMLElement;
   private input: HTMLInputElement;
   private sendBtn: HTMLButtonElement;
-  private muteBtn: HTMLButtonElement;
+  private muteBtn: HTMLButtonElement | null;
   private stopBtn: HTMLButtonElement;
   private voiceBtn: HTMLButtonElement;
-  private wakeBtn: HTMLButtonElement;
+  private wakeBtn: HTMLButtonElement | null;
   private screenBtn: HTMLButtonElement;
   private micBtn: HTMLButtonElement;
-  private forceLocalBtn: HTMLButtonElement;
-  private forceClaudeBtn: HTMLButtonElement;
+  private forceLocalBtn: HTMLButtonElement | null;
+  private forceClaudeBtn: HTMLButtonElement | null;
   private statusDot: HTMLElement;
   private statusLabel: HTMLElement;
   private banner: HTMLElement;
@@ -43,7 +43,7 @@ export class UI {
   // label/sub-label/indicator rather than just swapping its text.
   private voiceLabel: HTMLElement;
   private voiceSub: HTMLElement;
-  private muteLabel: HTMLElement;
+  private muteLabel: HTMLElement | null;
   private screenLabel: HTMLElement;
   private screenStatus: HTMLElement;
   private screenImg: HTMLImageElement;
@@ -84,21 +84,21 @@ export class UI {
     this.transcript = document.getElementById("transcript")!;
     this.input = document.getElementById("text-input") as HTMLInputElement;
     this.sendBtn = document.getElementById("send-btn") as HTMLButtonElement;
-    this.muteBtn = document.getElementById("mute-btn") as HTMLButtonElement;
+    this.muteBtn = document.getElementById("mute-btn") as HTMLButtonElement | null;
     this.stopBtn = document.getElementById("stop-btn") as HTMLButtonElement;
     this.voiceBtn = document.getElementById("voice-btn") as HTMLButtonElement;
-    this.wakeBtn = document.getElementById("wake-btn") as HTMLButtonElement;
+    this.wakeBtn = document.getElementById("wake-btn") as HTMLButtonElement | null;
     this.screenBtn = document.getElementById("screen-btn") as HTMLButtonElement;
     this.micBtn = document.getElementById("mic-btn") as HTMLButtonElement;
-    this.forceLocalBtn = document.getElementById("force-local-btn") as HTMLButtonElement;
-    this.forceClaudeBtn = document.getElementById("force-claude-btn") as HTMLButtonElement;
+    this.forceLocalBtn = document.getElementById("force-local-btn") as HTMLButtonElement | null;
+    this.forceClaudeBtn = document.getElementById("force-claude-btn") as HTMLButtonElement | null;
     this.statusDot = document.getElementById("status-dot")!;
     this.statusLabel = document.getElementById("status-label")!;
     this.banner = document.getElementById("connection-banner")!;
 
     this.voiceLabel = document.getElementById("voice-label")!;
     this.voiceSub = document.getElementById("voice-sub")!;
-    this.muteLabel = document.getElementById("mute-label")!;
+    this.muteLabel = document.getElementById("mute-label");
     this.screenLabel = document.getElementById("screen-label")!;
     this.screenStatus = document.getElementById("screen-status")!;
     this.screenImg = document.getElementById("screen-frame") as HTMLImageElement;
@@ -119,7 +119,7 @@ export class UI {
     this.input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") this.trySend();
     });
-    this.muteBtn.addEventListener("click", () => {
+    this.muteBtn?.addEventListener("click", () => {
       this.muted = !this.muted;
       this.renderMuteButton();
       this.onMuteToggle?.(this.muted);
@@ -142,11 +142,11 @@ export class UI {
       this.renderVoiceButton();
       this.onVoiceToggle?.(!this.voiceRunning);
     });
-    this.wakeBtn.addEventListener("click", () => {
+    this.wakeBtn?.addEventListener("click", () => {
       this.onWake?.();
     });
-    this.forceLocalBtn.addEventListener("click", () => this.trySend("/ollama "));
-    this.forceClaudeBtn.addEventListener("click", () => this.trySend("/claude "));
+    this.forceLocalBtn?.addEventListener("click", () => this.trySend("/ollama "));
+    this.forceClaudeBtn?.addEventListener("click", () => this.trySend("/claude "));
     this.renderVoiceButton();
     this.renderMuteButton();
   }
@@ -171,8 +171,8 @@ export class UI {
     const disabled = this.awaitingReply || this.awaitingConfirm || !this.connected;
     this.input.disabled = disabled;
     this.sendBtn.disabled = disabled;
-    this.forceLocalBtn.disabled = disabled;
-    this.forceClaudeBtn.disabled = disabled;
+    if (this.forceLocalBtn) this.forceLocalBtn.disabled = disabled;
+    if (this.forceClaudeBtn) this.forceClaudeBtn.disabled = disabled;
   }
 
   private renderVoiceButton(): void {
@@ -185,27 +185,32 @@ export class UI {
         : "Loading models";
       this.voiceBtn.classList.add("busy");
       this.voiceBtn.disabled = true;
-      this.wakeBtn.disabled = true;
+      if (this.wakeBtn) this.wakeBtn.disabled = true;
       return;
     }
     this.voiceBtn.classList.remove("busy");
     this.voiceBtn.classList.toggle("live", this.voiceRunning);
     this.voiceBtn.disabled = !this.connected;
-    this.wakeBtn.disabled = !this.connected;
+    if (this.wakeBtn) this.wakeBtn.disabled = !this.connected;
     this.voiceLabel.textContent = this.voiceRunning ? "Stop Voice" : "Start Voice";
     this.voiceSub.textContent = this.voiceRunning ? "Loop online" : "Loop offline";
     this.voiceBtn.title = this.voiceRunning
       ? "Stop the always-on voice loop"
       : "Start the always-on voice loop";
-    this.wakeBtn.title = this.voiceRunning
+    if (this.wakeBtn) this.wakeBtn.title = this.voiceRunning
       ? "Wake the voice loop and begin listening now"
       : "Start the voice loop, then wake it";
   }
 
   private renderMuteButton(): void {
-    this.muteBtn.classList.toggle("off", this.muted);
+    // The sound toggle was removed from the rail: it was constantly
+    // mistaken for the microphone mute sitting next to it, and Stop
+    // already silences a reply in progress. The handler stays so a
+    // layout that wants the button back needs no code change.
+    if (!this.muteBtn || !this.muteLabel) return;
+    this.muteBtn?.classList.toggle("off", this.muted);
     this.muteLabel.textContent = this.muted ? "Muted" : "Sound On";
-    this.muteBtn.title = this.muted
+    if (this.muteBtn) this.muteBtn.title = this.muted
       ? "Unmute spoken replies"
       : "Mute spoken replies";
   }
@@ -551,13 +556,13 @@ export class UI {
     // socket down they can do nothing at all. Disabling them says that,
     // instead of leaving buttons that look live and silently swallow the
     // click.
-    this.wakeBtn.disabled = !connected;
+    if (this.wakeBtn) this.wakeBtn.disabled = !connected;
     this.stopBtn.disabled = !connected;
     this.screenBtn.disabled = !connected;
     // Mute included: the mute state lives on the bridge (cfg.tts_enabled),
     // so toggling it with the socket down would change the button and
     // nothing else.
-    this.muteBtn.disabled = !connected;
+    if (this.muteBtn) this.muteBtn.disabled = !connected;
     this.updateInputEnabled();
     this.renderVoiceButton();
   }

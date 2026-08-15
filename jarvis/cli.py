@@ -409,6 +409,20 @@ _CAPABILITY_FLAGS = {
 }
 
 
+def handle_model_question(cfg: dict) -> str:
+    """Which model is answering — read from the live role assignments."""
+    roles = {r: llm.resolve(cfg, r) for r in llm.ROLES}
+    chat = roles["chat"]
+    others = ", ".join(
+        f"{role} on {entry['label']}" for role, entry in roles.items() if role != "chat"
+    )
+    where = "on this Mac, nothing leaves the machine" if chat["local"] else "in the cloud"
+    return (
+        f"Right now I'm answering you with {chat['label']}, running {where}. "
+        f"The rest: {others}. You can change any of them in the Models card in the web UI."
+    )
+
+
 def handle_capabilities(cfg: dict) -> str:
     """Answer "what can you do?" from the tool list, with no model call."""
     available = [
@@ -730,6 +744,8 @@ def handle_tool(
             return handle_files_shell(user_text, cfg, mem, interactive, confirm_fn)
 
         if domain == "capabilities":
+            if action == "model":
+                return handle_model_question(cfg)
             return handle_capabilities(cfg)
 
         if domain == "screen":
