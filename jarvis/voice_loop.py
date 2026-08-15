@@ -28,7 +28,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from jarvis import cli, hotkey, llm, sarvam_client, voice_events, wake_phrase
+from jarvis import cli, control, hotkey, llm, sarvam_client, voice_events, wake_phrase
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
 from jarvis.tools import spotify
@@ -55,6 +55,18 @@ class _StreamDead(Exception):
     delivering frames — caught in run() to close the dead stream and open
     a fresh one against whatever the current default input device is now
     (the OS will have already picked a new default after a device change)."""
+
+
+class _MicMuted(Exception):
+    """Raised the moment the microphone is switched off, to unwind out of
+    whatever the loop was doing and close the input stream.
+
+    Muting has to actually release the device, not merely ignore what it
+    hears. A flag that drops frames still leaves an open InputStream, the
+    macOS microphone indicator still lit, and no way for the user to
+    verify the claim. Closing the stream turns the indicator off — which
+    is the only evidence of "not listening" that doesn't require trusting
+    this code."""
 
 
 class _VoiceLoopShutdown(Exception):
@@ -499,6 +511,8 @@ class VoiceLoop:
         # now"; a stop means "be quiet", so the loop must not immediately
         # open a listening window and wait for a command that isn't coming.
         self._stop_requested = False
+        # Live switches shared with the web UI (jarvis/control.py).
+        self._control = control.Watcher()
         self._barge_frames: deque[np.ndarray] = deque(maxlen=12)
         self._barge_frames_lock = threading.Lock()
         # Two ways to be woken, same interface (reset/predict) so nothing
@@ -553,6 +567,13 @@ class VoiceLoop:
         saying the wake phrase — Orin chimes and listens for one utterance
         — so it goes through trigger_wake() and nothing else.
         """
+        if self._control.mic_muted:
+            # Pressing a key is as deliberate as clicking the button, and
+            # it means the user is at the machine. Without this, a muted
+            # Orin can only be revived from the web UI, which is exactly
+            # where you are not when you want to talk to it.
+            print("(Wake hotkey — turning the microphone back on.)", flush=True)
+            control.set_mic_muted(False)
         print("(Wake hotkey — listening.)", flush=True)
         self.trigger_wake()
 
@@ -588,6 +609,10 @@ class VoiceLoop:
 
     def _next_frame(self) -> np.ndarray:
         while True:
+            # Checked on the one path every listening state goes through,
+            # so mute takes effect mid-wake-word, mid-recording, anywhere.
+            if self._control.mic_muted:
+                raise _MicMuted()
             try:
                 return self.audio_q.get(timeout=1.0)
             except queue.Empty:
@@ -1062,6 +1087,20 @@ class VoiceLoop:
                     else:
                         print(f'Orin back online, {self.cfg["user_name"]}. Say "{wake_label}" to begin.\n')
                     self._conversation_loop(mem)
+            except _MicMuted:
+                # The `with` above has now exited, so the InputStream is
+                # closed and the microphone is genuinely released.
+                print("\n🔇 Microphone OFF — Orin is not listening. "
+                      "Nothing is recorded or transcribed until you turn it back on.\n",
+                      flush=True)
+                self._drain_queue()
+                voice_events.mic_state(True)
+                while self._control.mic_muted:
+                    time.sleep(0.3)
+                print("🎙  Microphone ON — listening again.\n", flush=True)
+                voice_events.mic_state(False)
+                self._last_frame_at = time.monotonic()
+                continue
             except _StreamDead:
                 print(
                     "\n(Audio stream stopped responding — likely a microphone/audio "
@@ -1150,11 +1189,14 @@ class VoiceLoop:
         while True:
             try:
                 last_reply_text = self._run_one_turn(mem, last_reply_text)
-            except (_StreamDead, _VoiceLoopShutdown):
+            except (_StreamDead, _VoiceLoopShutdown, _MicMuted):
                 # Must propagate — _StreamDead needs run()'s outer handler
                 # to reopen the audio stream, _VoiceLoopShutdown needs it
-                # to actually stop, neither is a per-turn problem to
-                # swallow here.
+                # to actually stop, and _MicMuted needs the `with` in
+                # run() to exit so the microphone is really released.
+                # None is a per-turn problem to swallow here; caught by
+                # the generic handler below, muting turned into an endless
+                # retry loop that never closed the device.
                 raise
             except Exception as e:
                 # Seen live: the whole process died silently mid-turn with

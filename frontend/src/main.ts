@@ -155,6 +155,17 @@ socket.onMessage((msg: ServerMessage) => {
       ui.setModels(msg.models, msg.roles, msg.role_labels);
       break;
     }
+    case "mic_state": {
+      ui.setMicState(msg.muted);
+      break;
+    }
+    case "mic_requested": {
+      // Shown immediately so the button doesn't feel dead; the voice
+      // loop's mic_state follows within a few hundred ms and is what
+      // actually settles it.
+      ui.setMicState(msg.muted);
+      break;
+    }
     case "screen_capture": {
       ui.setCapturing(msg.phase === "start");
       break;
@@ -211,6 +222,7 @@ ui.onWake = () => {
 };
 ui.onScreenToggle = (enabled) => socket.setScreenFeed(enabled);
 ui.onModelChange = (role, model) => socket.setModel(role, model);
+ui.onMicToggle = (muted) => socket.setMic(muted);
 
 // Real elapsed session time since page load.
 const sessionStart = performance.now();

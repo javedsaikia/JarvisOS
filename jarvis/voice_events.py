@@ -130,6 +130,16 @@ def screen_capture_phase(phase: str) -> None:
     _write({"type": "screen_capture", "phase": phase})
 
 
+def mic_state(muted: bool) -> None:
+    """Report that the microphone was actually released or reopened.
+
+    Sent by the voice loop rather than the button that asked for it: the
+    UI should show "mic off" when the device is really closed, not when a
+    request was sent. For a privacy control, the difference matters.
+    """
+    _write({"type": "mic_state", "muted": bool(muted)})
+
+
 def speaking_stopped() -> None:
     """Playback ended early (barge-in, stop, or a failed clip). The UI
     holds the last envelope until it runs out, so an interruption has to

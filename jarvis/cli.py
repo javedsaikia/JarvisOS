@@ -383,6 +383,52 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
         return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
 
 
+# What Orin can actually do, and the plainest phrasing that triggers each.
+# Kept next to the router rather than in the persona because it is a fact
+# about the code, not a matter of tone — and because a model asked the
+# same question twice should not give two different answers.
+CAPABILITIES = [
+    ("files", "read and search files on this Mac", "find my notes about X"),
+    ("shell", "run shell commands", "run ls in the terminal"),
+    ("calendar", "read and add calendar events", "what's on my calendar tomorrow"),
+    ("notes", "read and write Notes", "make a note about X"),
+    ("email", "check your inbox", "check my email"),
+    ("spotify", "control Spotify", "play some music"),
+    ("vision", "read what's on your screen", "what's on my screen"),
+    ("browser", "control a browser", "open example.com"),
+    ("location", "weather and nearby places", "find restaurants near me"),
+    ("calling", "place a phone call", "call this number"),
+]
+
+# Which config flag, if any, switches each one off.
+_CAPABILITY_FLAGS = {
+    "vision": "vision_enabled",
+    "browser": "browser_enabled",
+    "location": "location_enabled",
+    "calling": "calling_enabled",
+}
+
+
+def handle_capabilities(cfg: dict) -> str:
+    """Answer "what can you do?" from the tool list, with no model call."""
+    available = [
+        (what, example) for key, what, example in CAPABILITIES
+        if cfg.get(_CAPABILITY_FLAGS.get(key, ""), True)
+    ]
+    # Written to be *spoken*: this answer goes through TTS, and a
+    # ten-bullet list read aloud takes half a minute. One sentence naming
+    # what exists, then an offer of detail.
+    if not available:
+        return "Every tool is switched off in config at the moment, so I can only talk."
+    what = [w for w, _ in available]
+    listed = ", ".join(what[:-1]) + f", and {what[-1]}" if len(what) > 1 else what[0]
+    return (
+        f"Yes — I can {listed}. "
+        "Just ask in plain words: \"what's on my screen\", \"find restaurants near me\", "
+        "\"check my email\". Ask me how to phrase any one of those and I'll tell you."
+    )
+
+
 def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
                   confirm_fn=text_confirm) -> str:
     """Read-only — same tier as calendar/notes/email reads, no confirm.
@@ -682,6 +728,9 @@ def handle_tool(
 
         if domain == "files":
             return handle_files_shell(user_text, cfg, mem, interactive, confirm_fn)
+
+        if domain == "capabilities":
+            return handle_capabilities(cfg)
 
         if domain == "screen":
             return handle_screen(user_text, cfg, interactive, confirm_fn)

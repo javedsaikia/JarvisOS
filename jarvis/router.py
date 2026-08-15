@@ -225,11 +225,45 @@ WEATHER_PATTERNS = [
 # small fixed vocabulary, not LLM extraction. Deliberately requires both
 # a place-type word AND a proximity word ("nearby"/"near me"/...) so a
 # plain "restaurant" mention in unrelated conversation doesn't misfire.
+# One vocabulary for "a place", reused by every pattern below. Seen live:
+# "what is the nearest restaurant right now which is open at the moment?"
+# matched nothing, fell through to the plain model, and got "I don't have
+# real-time access to current locations" — an apology for a capability
+# this actually has. A miss here is not a cheap failure: it hands a
+# location question to something with no location.
+_PLACE = (r"(?:restaurants?|hotels?|gas stations?|petrol|fuel|caf[eé]s?|coffee"
+          r"|pharmac(?:y|ies)|food|places? to eat|somewhere to eat|bars?|atms?"
+          r"|hospitals?|clinics?|supermarkets?|groceries|grocery stores?)")
+_NEAR = r"(?:nearby|near me|near here|around here|close by|closest|nearest|in the area|around me)"
+
 NEARBY_PATTERNS = [
-    r"\b(nearby|near me|around here|close by)\b.*\b(restaurant|hotel|gas station|petrol|fuel|cafe|coffee|pharmacy|food)s?\b",
-    r"\b(restaurant|hotel|gas station|petrol|fuel|cafe|coffee|pharmacy|food)s?\b.*\b(nearby|near me|around here|close by)\b",
-    r"\bfind (a |the )?(nearby |closest |nearest )?(restaurant|hotel|gas station|cafe|pharmacy)\b",
-    r"\bwhere('s| is) the (nearest|closest) (restaurant|hotel|gas station|cafe|pharmacy)\b",
+    rf"\b{_NEAR}\b.*\b{_PLACE}\b",
+    rf"\b{_PLACE}\b.*\b{_NEAR}\b",
+    rf"\bfind (?:a |the |me )?(?:nearby |closest |nearest |good )?{_PLACE}\b",
+    rf"\bwhere(?:'s| is| can i find)? (?:the )?(?:nearest|closest) ?{_PLACE}?\b",
+    # "where can I eat", "somewhere to grab a coffee" — the intent is a
+    # place near the user even with no proximity word at all.
+    r"\bwhere can i (?:eat|get (?:some )?(?:food|coffee|lunch|dinner|breakfast))\b",
+    rf"\b(?:any|some) (?:good |decent |nice )?{_PLACE}\b.*\b(?:open|around|here|near)\b",
+]
+
+# "What can you do?" answered from the actual tool list rather than by the
+# model. Deterministic for the same reason calendar reads are: the model
+# does not know what tools exist, and — measured live — it anchors on its
+# own earlier denial and repeats it. Asked "do you have access to my local
+# folders?" it replied "I don't have direct access to your personal
+# files", which is false, and teaches the user not to bother asking.
+# Checked AFTER the action groups, so "read my screen" still reads the
+# screen instead of describing the ability to.
+CAPABILITY_PATTERNS = [
+    r"\bwhat (can|do) you do\b",
+    r"\bwhat are (your|the) (capabilities|abilities|features|tools)\b",
+    r"\bwhat can you help (me )?with\b",
+    r"\bdo you have access to\b",
+    r"\bcan you access\b",
+    r"\bdo you have (any )?(tools|abilities|access)\b",
+    r"\bwhat (tools|abilities) do you have\b",
+    r"\bare you able to (access|use|control)\b",
 ]
 
 # Confirmed — opens a real app with a real URL. See MAPS_PATTERNS' domain
@@ -418,6 +452,9 @@ _TOOL_GROUPS = [
     ("location", "nearby", [re.compile(p, re.IGNORECASE) for p in NEARBY_PATTERNS]),
     ("location", "open_maps", [re.compile(p, re.IGNORECASE) for p in MAPS_PATTERNS]),
     ("call", "auto", [re.compile(p, re.IGNORECASE) for p in CALL_PATTERNS]),
+    # After every action group above, so a request to DO something is
+    # never answered with a description of being able to do it.
+    ("capabilities", "read", [re.compile(p, re.IGNORECASE) for p in CAPABILITY_PATTERNS]),
     # Checked before "files" — a request naming a literal command (e.g. "run
     # ls -la") must never fall through to the LLM-mediated files path.
     ("shell", "auto", [re.compile(p, re.IGNORECASE) for p in SHELL_PATTERNS]),

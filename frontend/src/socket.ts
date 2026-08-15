@@ -23,6 +23,10 @@ export type ServerMessage =
   // arrives on the fallback capture path; normally the HUD's window is
   // composited out natively and the UI never hears about it.
   | { type: "screen_capture"; phase: "start" | "end" }
+  // mic_requested is the button being pressed; mic_state is the voice
+  // loop confirming it really opened or closed the device.
+  | { type: "mic_requested"; muted: boolean }
+  | { type: "mic_state"; muted: boolean }
   // The model catalog and which model answers for each job. Sent on
   // connect and after every change, so the picker can't drift from what
   // is actually running.
@@ -136,6 +140,10 @@ export class OrinSocket {
 
   setModel(role: string, model: string): void {
     this.send({ type: "set_model", role, model });
+  }
+
+  setMic(muted: boolean): void {
+    this.send({ type: "set_mic", muted });
   }
 
   setScreenFeed(enabled: boolean): void {

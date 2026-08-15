@@ -1216,3 +1216,39 @@ html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
 /* Anything not running locally is worth noticing at a glance: it is the
    difference between free and metered. */
 #models-status.cloud { color: var(--warn); text-shadow: 0 0 8px rgba(255, 176, 32, 0.4); }
+
+/* ── Microphone privacy state ────────────────────────────────────────────
+   Not a subtle indicator on purpose. "Is it listening?" should be
+   answerable from across the room, and the answer should be impossible to
+   confuse with the TTS mute next to it. */
+
+#mic-btn .mic-slash { display: none; }
+#mic-btn.off .mic-slash { display: inline; }
+#mic-btn.off {
+  color: #ffd9dd;
+  border-color: rgba(255, 77, 94, 0.55);
+  background: linear-gradient(150deg, rgba(120, 0, 20, 0.35), rgba(30, 0, 8, 0.55));
+}
+#mic-btn.off .cmd-icon { filter: drop-shadow(0 0 6px rgba(255, 77, 94, 0.6)); opacity: 1; }
+
+/* While the mic is closed the whole HUD says so — the core caption, the
+   ring tint and a banner. A privacy control that is easy to miss is a
+   privacy control you cannot rely on. */
+html[data-mic="off"] .core-name { color: #ffd9dd; text-shadow: 0 0 10px var(--red), 0 0 34px rgba(255, 77, 94, 0.5); }
+html[data-mic="off"] #hud-ring { filter: drop-shadow(0 0 6px rgba(255, 77, 94, 0.45)); }
+html[data-mic="off"] #app::before {
+  content: "MICROPHONE OFF — NOT LISTENING";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 8;
+  padding: 5px;
+  text-align: center;
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  color: #ffd9dd;
+  background: rgba(120, 0, 20, 0.55);
+  border-bottom: 1px solid rgba(255, 77, 94, 0.5);
+  pointer-events: none;
+}

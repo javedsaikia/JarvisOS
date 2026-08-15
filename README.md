@@ -731,6 +731,41 @@ So there are three ways to start a turn, suiting different moments: say
 "Hey Orin" from across the room, tap the shortcut while your hands are on
 the keyboard, hold Control+Option when there's music playing.
 
+### Microphone off (privacy)
+
+The **MIC** button in the left rail closes the microphone. Not "ignores
+what it hears" — closes it: the audio device is released, the macOS
+microphone indicator in the menu bar goes out, and nothing is captured,
+buffered or transcribed until you switch it back on.
+
+That distinction is the whole point. A mute flag that keeps the stream
+open and drops frames looks identical from the outside, and gives you no
+way to check the claim. With the device closed, the operating system is
+the one telling you Orin is not listening — you do not have to trust this
+code. You can also check from anywhere:
+
+```bash
+cat /tmp/orin_control.json      # {"mic_muted": true, ...}
+```
+
+While muted: no wake phrase, no push-to-talk, no recording, no
+transcription. The HUD says so across the top and the core turns red, so
+it is not a state you can be in without noticing.
+
+Turning it back on: the **MIC** button, or the wake hotkey (double-tap
+Right Command), which un-mutes and starts a turn in one gesture — the
+keyboard is not the microphone, so a deliberate keypress is a safe way
+back without ever having listened.
+
+This is separate from **SOUND ON / MUTED**, which is about Orin's *voice*
+— whether replies are spoken aloud. One is what it says, the other is
+what it hears.
+
+State lives in `/tmp/orin_control.json`, written atomically by the bridge
+and polled by the voice loop, because the two are separate OS processes
+and a privacy switch needs somewhere to live that either side can read
+and neither can lose.
+
 ### Stopping it
 
 **"Stop Orin"** (or "Orin, stop" / "Orin, be quiet") cuts a reply off

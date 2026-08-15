@@ -31,7 +31,7 @@ from pathlib import Path
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from jarvis import cli, llm, tts, voice_events
+from jarvis import cli, control, llm, tts, voice_events
 from jarvis.config import load_config, update_config
 from jarvis.memory import LOG_PATH, MemoryStore
 from jarvis import screen_capture
@@ -549,6 +549,10 @@ async def _voice_events_poll_loop() -> None:
                 }))
             elif event.get("type") == "speaking_end":
                 await _broadcast(json.dumps({"type": "voice_audio_end"}))
+            elif event.get("type") == "mic_state":
+                await _broadcast(json.dumps({
+                    "type": "mic_state", "muted": bool(event.get("muted")),
+                }))
             elif event.get("type") == "screen_capture":
                 # "Get out of the way, I'm taking a screenshot" — only
                 # sent on the fallback capture path (jarvis/screen_capture.py
@@ -680,6 +684,9 @@ async def handle_connection(ws) -> None:
             "enabled": feed_allowed and _screen_feed_on.is_set(),
         }))
         await ws.send(json.dumps(_models_payload()))
+        await ws.send(json.dumps({
+            "type": "mic_state", "muted": control.mic_muted(),
+        }))
         async for raw in ws:
             try:
                 msg = json.loads(raw)
@@ -724,6 +731,16 @@ async def handle_connection(ws) -> None:
                         "type": "error",
                         "message": "That model can't be selected — check the API key in jarvis/.env.",
                     }))
+
+            elif mtype == "set_mic":
+                # Privacy switch: writes the shared control state, which
+                # the voice loop is polling. The UI does not go green
+                # until the loop confirms it actually closed the device
+                # (voice_events.mic_state) — a privacy control must
+                # report the world, not the request.
+                muted = bool(msg.get("muted"))
+                control.set_mic_muted(muted)
+                await _broadcast(json.dumps({"type": "mic_requested", "muted": muted}))
 
             elif mtype == "screen_feed":
                 enabled = bool(msg.get("enabled"))

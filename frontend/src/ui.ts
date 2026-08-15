@@ -32,6 +32,7 @@ export class UI {
   private voiceBtn: HTMLButtonElement;
   private wakeBtn: HTMLButtonElement;
   private screenBtn: HTMLButtonElement;
+  private micBtn: HTMLButtonElement;
   private forceLocalBtn: HTMLButtonElement;
   private forceClaudeBtn: HTMLButtonElement;
   private statusDot: HTMLElement;
@@ -50,6 +51,7 @@ export class UI {
   private coreState: HTMLElement;
   private modelRoles: HTMLElement;
   private modelsStatus: HTMLElement;
+  private micLabel: HTMLElement;
 
   // HUD readout panel — purely additive, independent of status-dot/statusLabel above.
   private readoutLink: HTMLElement;
@@ -65,6 +67,7 @@ export class UI {
   private voiceRunning = false;
   private voiceBusy = false;
   private screenFeedOn = true;
+  private micMuted = false;
   private connected = true;
 
   onSend: ((text: string) => void) | null = null;
@@ -75,6 +78,7 @@ export class UI {
   onWake: (() => void) | null = null;
   onScreenToggle: ((enabled: boolean) => void) | null = null;
   onModelChange: ((role: string, model: string) => void) | null = null;
+  onMicToggle: ((muted: boolean) => void) | null = null;
 
   constructor() {
     this.transcript = document.getElementById("transcript")!;
@@ -85,6 +89,7 @@ export class UI {
     this.voiceBtn = document.getElementById("voice-btn") as HTMLButtonElement;
     this.wakeBtn = document.getElementById("wake-btn") as HTMLButtonElement;
     this.screenBtn = document.getElementById("screen-btn") as HTMLButtonElement;
+    this.micBtn = document.getElementById("mic-btn") as HTMLButtonElement;
     this.forceLocalBtn = document.getElementById("force-local-btn") as HTMLButtonElement;
     this.forceClaudeBtn = document.getElementById("force-claude-btn") as HTMLButtonElement;
     this.statusDot = document.getElementById("status-dot")!;
@@ -101,6 +106,7 @@ export class UI {
     this.coreState = document.getElementById("core-state")!;
     this.modelRoles = document.getElementById("model-roles")!;
     this.modelsStatus = document.getElementById("models-status")!;
+    this.micLabel = document.getElementById("mic-label")!;
 
     this.readoutLink = document.getElementById("readout-link")!;
     this.readoutBackend = document.getElementById("readout-backend")!;
@@ -117,6 +123,11 @@ export class UI {
       this.muted = !this.muted;
       this.renderMuteButton();
       this.onMuteToggle?.(this.muted);
+    });
+    this.micBtn.addEventListener("click", () => {
+      // Optimistic only for the label; setMicState() below is what
+      // actually confirms it, once the voice loop has closed the device.
+      this.onMicToggle?.(!this.micMuted);
     });
     this.screenBtn.addEventListener("click", () => {
       this.setScreenFeedState(!this.screenFeedOn);
@@ -269,6 +280,20 @@ export class UI {
       ? [...new Set(cloud.map((m) => m.label.split(" ")[0]))].join(" + ")
       : "Local";
     this.modelsStatus.classList.toggle("cloud", cloud.length > 0);
+  }
+
+  /** Microphone state, as reported by the voice loop actually opening or
+   * closing the device — not by the button being clicked. For a privacy
+   * control the UI must show what is true, not what was asked for.
+   */
+  setMicState(muted: boolean): void {
+    this.micMuted = muted;
+    this.micBtn.classList.toggle("off", muted);
+    this.micLabel.textContent = muted ? "Mic Off" : "Mic On";
+    this.micBtn.title = muted
+      ? "Microphone is closed — Orin hears nothing. Click to listen again."
+      : "Privacy: close the microphone completely — Orin stops listening";
+    document.documentElement.dataset.mic = muted ? "off" : "on";
   }
 
   /** Blank the HUD while the backend screenshots the desktop.
