@@ -25,6 +25,28 @@ import time
 
 from pynput import keyboard
 
+# Warms pyobjc's lazy symbol cache for HIServices.AXIsProcessTrusted
+# *before* any listener thread can touch it. pynput's darwin backend calls
+# that function from inside each Listener's own background thread the
+# moment it starts, and pyobjc resolves it lazily on first use with a
+# plain check-then-pop on a shared dict (objc/_lazyimport.py) — not
+# thread-safe. With one listener (the original push-to-talk-only setup)
+# that race never had a second thread to lose to. Adding the wake hotkey
+# listener gave it one: both start within microseconds of each other in
+# VoiceLoop.__init__, occasionally both hit the lazy resolution at once,
+# and the loser's `funcmap.pop(name)` raises KeyError on an already-popped
+# key — printed as "Exception in thread Thread-1" with no indication
+# whatsoever that a hotkey was the cause, and that thread's listener is
+# simply dead from then on. Calling the function once here, single-
+# threaded, before either Listener starts, means both threads find it
+# already resolved and never touch the race.
+try:
+    import HIServices as _HIServices
+
+    _HIServices.AXIsProcessTrusted()
+except Exception:
+    pass
+
 # Control+Option, matching Clicky's default. Both are modifiers, so
 # holding them cannot type anything into whatever app has focus.
 DEFAULT_COMBO = ("ctrl", "alt")
