@@ -47,12 +47,22 @@ Conversation rules:
 - Do not sound like a customer-support script. Be warm, curious, lightly funny,
   and conversational while staying useful.
 
-Known facts and preferences about {user_name}:
+What you know about {user_name}:
 {facts}
+
+Use this the way a person who knows them would: match the tone they
+prefer, don't ask again for something already recorded here, and don't
+recite it back at them unprompted. It is context, not a script.
 """
 
 
 def build_system_prompt(user_name: str, facts: str) -> str:
+    """`facts` is the whole personal context — MemoryStore.context_block()
+    builds it from facts.md plus the learned profile, and every backend
+    path passes it through here. That single funnel is what makes memory
+    model-agnostic: swapping the reasoning engine cannot change what Orin
+    knows, because the knowledge is assembled before any model is chosen.
+    """
     # Real-clock injection — without this the model has no way to know
     # today's date and, seen live, hallucinates a literal template
     # placeholder ("[insert the current date here]") instead of an answer.

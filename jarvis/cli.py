@@ -11,7 +11,7 @@ from typing import Callable
 from jarvis import claude_handoff, location_client, maps_client, ollama_client, router, sarvam_client, tts
 from jarvis.config import load_config
 from jarvis.memory import MemoryStore
-from jarvis import llm
+from jarvis import llm, reflection
 from jarvis.persona import build_system_prompt
 from jarvis.tools import browser, calendar, calling, files, location, notes, parsing, registry, shell, spotify, vision
 
@@ -66,7 +66,7 @@ def handle_ollama(
     model_role: str = "chat",
     used_entry: dict | None = None,
 ) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.load_facts())
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block())
     messages = [{"role": "system", "content": system_prompt}]
     # Excludes Sarvam turns — seen live: Ollama's small English-tuned model
     # produced garbled Hindi-ish gibberish (not just imitation, actual
@@ -133,7 +133,7 @@ def handle_sarvam(
     # explicitly chosen for Hindi/Assamese — the model won't infer the
     # target language just from being routed here.
     language_name = {"hi-IN": "Hindi", "as-IN": "Assamese"}.get(language_code, language_code)
-    system_prompt = build_system_prompt(cfg["user_name"], mem.load_facts())
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block())
     system_prompt += f"\n\nRespond in {language_name}, regardless of what language the user writes in."
     messages = [{"role": "system", "content": system_prompt}]
     for turn in mem.recent_turns(recent_turns_limit):
@@ -307,7 +307,7 @@ def handle_shell(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_c
 
 
 def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive: bool, confirm_fn=text_confirm) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.load_facts()) + "\n\n" + registry.build_tool_prompt()
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block()) + "\n\n" + registry.build_tool_prompt()
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
 
     try:
@@ -427,7 +427,7 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
         return "Browser control is disabled in config."
 
     system_prompt = (
-        build_system_prompt(cfg["user_name"], mem.load_facts())
+        build_system_prompt(cfg["user_name"], mem.context_block())
         + "\n\n"
         + registry.build_tool_prompt(registry.BROWSER_TOOL_SCHEMAS)
     )
@@ -764,6 +764,10 @@ def process_turn(
 
     mem.log_turn("user", clean_text, backend, source=source)
     mem.log_turn("assistant", response, backend, source=source)
+    # Learn from what just happened. Returns immediately — the distilling
+    # runs on a background thread, after the reply is already on its way,
+    # so it can never cost the user latency. See jarvis/reflection.py.
+    reflection.maybe_reflect_async(mem, cfg)
     return backend, response
 
 

@@ -47,6 +47,11 @@ ROLES = {
     "chat": "Typed conversation (terminal and web UI)",
     "voice": "Spoken replies, where latency matters most",
     "screen": "Questions about what's on screen",
+    # Distils conversations into memory/profile.md. Runs in the
+    # background, on nobody's critical path, so the cheapest capable model
+    # is usually the right choice — and it stays local unless you say
+    # otherwise, since it reads every conversation you have.
+    "memory": "Learning your profile from conversations",
 }
 
 

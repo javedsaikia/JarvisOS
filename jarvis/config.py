@@ -33,7 +33,26 @@ DEFAULTS = {
     ],
     # Defaults stay local, so nothing starts costing money on its own —
     # a cloud model is used only for a role you assign it to.
-    "model_roles": {"chat": "local", "voice": "local-fast", "screen": "local-fast"},
+    "model_roles": {"chat": "local", "voice": "local-fast", "screen": "local-fast",
+                    # Not "local-fast": reflection runs in the background
+                    # where nobody is waiting, so it should use the most
+                    # capable local model rather than the quickest. A
+                    # small model invents, and an invented profile line is
+                    # permanent context.
+                    "memory": "local"},
+    # --- Memory (jarvis/memory.py + jarvis/reflection.py)
+    # Raw turns stay loadable for this many days, then move to
+    # conversation_archive.jsonl. Nothing is deleted.
+    "memory_retention_days": 21,
+    # Automatic profile-building. Off means Orin only knows what you told
+    # it explicitly via /remember and facts.md.
+    "memory_reflection_enabled": True,
+    # Reflect after this many new turns, or after this long with at least
+    # a few turns waiting — whichever comes first.
+    "memory_reflect_every_turns": 20,
+    "memory_reflect_min_seconds": 1200,
+    "memory_reflect_max_turns": 60,
+    "memory_reflect_max_tokens": 500,
     "claude_code_enabled": True,
     "claude_code_command": "claude",
     "claude_code_confirm": True,
@@ -121,10 +140,21 @@ DEFAULTS = {
 }
 
 
+# Settings whose value is a dict of independent sub-settings. A plain
+# update() replaces the whole dict, so a config.json written before a new
+# sub-key existed would silently drop it — that is how the "memory" role
+# went missing the moment anyone saved a model choice from the dashboard.
+_MERGED_KEYS = ("model_roles",)
+
+
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         cfg = DEFAULTS.copy()
-        cfg.update(json.loads(CONFIG_PATH.read_text()))
+        saved = json.loads(CONFIG_PATH.read_text())
+        for key in _MERGED_KEYS:
+            if isinstance(saved.get(key), dict) and isinstance(DEFAULTS.get(key), dict):
+                saved[key] = {**DEFAULTS[key], **saved[key]}
+        cfg.update(saved)
         return cfg
     save_config(DEFAULTS)
     return DEFAULTS.copy()

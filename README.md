@@ -202,9 +202,85 @@ local `/api/chat` endpoint.
 
 ## Memory
 
-- `jarvis/memory/facts.md` — durable facts/preferences, human-editable, fed
-  into the system prompt every turn. Add with `/remember <fact>`.
-- `jarvis/memory/conversation_log.jsonl` — recent turn history for context.
+**The model is the reasoning engine, not the memory.** Everything personal
+lives locally as plain text and is assembled *before* a model is chosen,
+so switching from local to Groq or Gemini changes who is thinking, never
+who Orin thinks you are.
+
+| File | Owner | What it holds |
+|---|---|---|
+| `memory/facts.md` | **you** | Hand-written facts, and whatever `/remember` adds. Nothing automatic ever edits it |
+| `memory/profile.md` | **Orin** | Distilled from conversations: identity, speaking style, preferences, recurring topics |
+| `memory/conversation_log.jsonl` | — | Raw turns, append-only |
+| `memory/conversation_archive.jsonl` | — | Turns past the retention window. Archived, never deleted |
+| `memory/memory_state.json` | — | When reflection last ran, so restarts don't re-distil the same history |
+
+Only `facts.md` is tracked by git; the rest is personal and gitignored.
+
+### Model-agnostic by construction
+
+`MemoryStore.context_block()` builds one block from facts + profile,
+`persona.build_system_prompt()` wraps it, and **every** backend path goes
+through that pair before `llm.chat()` picks a provider. There is no
+per-provider memory path to drift. Verified in testing: the system prompt
+Groq receives and the one Gemini receives are byte-identical, and both
+contain the learned profile.
+
+### Self-improving
+
+After a turn is answered, `jarvis/reflection.py` runs on a background
+thread — never in the turn, so it can't cost you latency. Once ~20 new
+turns have accumulated (or 20 minutes have passed with a few waiting), it
+reads them and folds what it finds into `profile.md`. You never have to
+say "remember this".
+
+**Every proposed item must quote the evidence for it, and the quote is
+checked against what you actually said.** That is the difference between
+a profile and a fabrication, and it is not a stylistic preference — on the
+first real run over 1,600 turns of history, the small local model produced
+*"Known for being reflective and deeply loving towards others"* and
+*"Tools/Technologies: Unknown"* from a conversation containing neither. An
+invented profile line is worse than an invented answer: it is injected
+into every future prompt, so it keeps being wrong. With the quote check
+the same run produced three items, all traceable to something real.
+
+Also enforced at merge time: credential-shaped strings never enter the
+profile (it is sent to hosted providers on every turn), near-duplicates
+are rejected, empty "Unknown" filler is dropped, and each section is
+capped so the profile stays a summary and drifts toward who you are now.
+
+The `memory` role defaults to the **best local model, not the fastest** —
+the opposite of the `voice` role — precisely because nobody is waiting on
+it and a small model invents. Change it in the dashboard like any other
+role; it stays local and free unless you assign it something else.
+
+### Inspecting and driving it
+
+```bash
+jarvis/.venv/bin/python3 -m jarvis.reflection            # status + current profile
+jarvis/.venv/bin/python3 -m jarvis.reflection --now      # distil right now
+jarvis/.venv/bin/python3 -m jarvis.reflection --prune    # archive old turns
+```
+
+`profile.md` is a plain file: edit a line you disagree with, or delete the
+whole thing and it rebuilds. Nothing you wrote in `facts.md` is affected
+either way.
+
+### Verifying it survives a model switch
+
+1. `python3 -m jarvis.reflection` and note a line from the profile.
+2. In the web UI, set **chat** to a local model. Ask "what do you know about me?"
+3. Switch **chat** to Groq or Gemini. Ask again.
+
+The recalled details should be the same; only the phrasing and the reply
+label (`[Orin]` / `[Groq]` / `[Gemini]`) change.
+
+### Config
+
+- `memory_retention_days` (21) — raw turns stay loadable this long, then archive
+- `memory_reflection_enabled` (true) — false means Orin only knows what you told it explicitly
+- `memory_reflect_every_turns` (20) / `memory_reflect_min_seconds` (1200) — how often it distils
+- `memory_reflect_max_turns` (60) / `memory_reflect_max_tokens` (500) — how much it looks at per pass
 
 ## Calendar & Notes (AppleScript, no Ollama/Claude call needed)
 
