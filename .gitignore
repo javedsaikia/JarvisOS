@@ -12,8 +12,13 @@ __pycache__/
 max/memory/conversation_log.jsonl
 max/memory/conversation_archive.jsonl
 max/memory/facts.md
+max/memory/assamese_style.md
+# Same reasoning as assamese_style.md above: the .example.md is the
+# template that ships, this is the user's own collected material.
+max/memory/assamese_jokes.md
 max/memory/profile.md
 max/memory/memory_state.json
+max/memory/session.md
 .claude/settings.local.json
 .claude/*.lock
 max/browser_profile/

@@ -29,7 +29,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from max import cli, control, hotkey, llm, sarvam_client, voice_events, wake_phrase
+from max import cli, control, hotkey, llm, sarvam_client, speech, voice_events, wake_phrase
 from max.config import load_config
 from max.memory import MemoryStore
 from max.tools import spotify
@@ -99,11 +99,15 @@ NO_SPEECH_BAIL_SECONDS = 3.0
 # fired, the user paused to gather the sentence, and Max had already
 # stopped listening with no cue that it ever started. Field-tested
 # Whisper-assistant configs sit around 12s before returning to idle.
-WAKE_LISTEN_SECONDS = 10.0
+WAKE_LISTEN_SECONDS = 6.0
 # How long after Max stops speaking its own voice can still be arriving
 # at the microphone. Beyond this the room is quiet and anything heard is
 # the user, however much it happens to sound like the last reply.
 ECHO_WINDOW_SECONDS = 4.0
+# Shortest buffered clip a push-to-talk press may be treated as a complete
+# command. Not a tuning knob: below this there is physically no room for
+# one, and accepting it costs a whole wasted turn. See the use site.
+_PTT_MIN_COMMAND_SAMPLES = int(0.8 * SAMPLE_RATE)
 # Word-boundary contains-match, not exact set membership — seen live:
 # exact matching missed "Hey stop!" (normalizes to "hey stop", which isn't
 # in the set) and sent it to Ollama as a normal query instead of
@@ -134,6 +138,23 @@ SHUTDOWN_RE = re.compile(r"\b(?:stop\s+listening|quit|exit|shutdown|go\s+to\s+sl
 
 def _normalize_for_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9\s]+", "", text.lower()).strip()
+
+
+def _fold_wake_text(text: str) -> str:
+    """Keep Assamese letters. Latin-only normalize used to turn
+    'ম্যাক্স।' into '' so name-only never counted as a wake."""
+    t = (text or "").replace("\u0964", " ")
+    t = t.lower()
+    # Keep the Bengali/Assamese block: virama and matras are not \w,
+    # so a generic strip turned ম্যাক্স into ম য ক স.
+    t = re.sub(r"[^\w\s\u0980-\u09FF]+", " ", t, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+_ASSAMESE_NAME_ONLY_RE = re.compile(
+    r"^(?:(?:হে(?:ই)?|হায়)\s*)?(?:ম্যাক্স|মেক্স|মাক্স)$"
+)
+_PUNCT_ONLY_RE = re.compile(r"^[\s!,.?\u0964\-–—]+$")
 
 
 # Exact normalized forms only (not a fuzzy/substring check) — deliberately
@@ -171,22 +192,32 @@ def configure_wake_phrases(phrases: list[str]) -> None:
         if not words:
             continue
         name = words[-1]
-        for spelling in [name, *_NAME_MISHEARINGS.get(name, [])]:
+        extra = list(_NAME_MISHEARINGS.get(name, []))
+        if name == "max":
+            extra.extend(["মেক্স", "ম্যাক্স", "মাক্স", "এক্স"])
+        for spelling in [name, *extra]:
             names.add(spelling)
             bare.add(spelling)
             bare.add(spelling.replace(" ", ""))
             for lead in leads:
                 bare.add(f"{lead} {spelling}")
                 bare.add(f"{lead}{spelling}".replace(" ", ""))
+            for lead in ("হে", "হেই", "হায়"):
+                if re.search(r"[\u0980-\u09FF]", spelling):
+                    bare.add(f"{lead} {spelling}")
+                    bare.add(f"{lead}{spelling}")
     _BARE_WAKE_PHRASES = bare
     escaped = "|".join(sorted((re.escape(n) for n in names), key=len, reverse=True))
+    as_leads = r"হেই|হে|হায়"
+    punct = r"[!,.?\u0964]*"
     _LEADING_WAKE_PHRASE_RE = re.compile(
-        rf"^(?:(?:{'|'.join(leads)})[,!.]?\s*)?(?:{escaped})\b[!,.?]*\s*",
+        rf"^(?:(?:{'|'.join(leads)}|{as_leads})[,!.\u0964]?\s*)?"
+        rf"(?:{escaped})(?:\b|{punct}){punct}\s*",
         re.IGNORECASE,
     )
 
 
-configure_wake_phrases(["hey max"])
+configure_wake_phrases(["hey max", "max"])
 
 
 def _is_bare_wake_phrase(text: str) -> bool:
@@ -201,7 +232,23 @@ def _is_bare_wake_phrase(text: str) -> bool:
     already in an active window (see _run_one_turn); saying the wake
     phrase to genuinely start a fresh conversation is unaffected.
     """
-    return _normalize_for_compare(text) in _BARE_WAKE_PHRASES
+    folded = _fold_wake_text(text)
+    if not folded:
+        return False
+    if folded in _BARE_WAKE_PHRASES:
+        return True
+    if _normalize_for_compare(text) in _BARE_WAKE_PHRASES:
+        return True
+    return bool(_ASSAMESE_NAME_ONLY_RE.fullmatch(folded))
+
+
+def _is_empty_command(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _PUNCT_ONLY_RE.fullmatch(t):
+        return True
+    return _is_bare_wake_phrase(t)
 
 
 def _strip_matched_name(text: str, token: str) -> str:
@@ -290,7 +337,15 @@ def _ack_tone_path() -> str:
     return path
 
 
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+# Closing quotes/brackets may sit between the terminator and the space.
+# Without them a line like: ...Schrodinger's cat?" The librarian replied...
+# had NO split point at all, so the "first chunk" was the entire joke and
+# the user waited for all of it to synthesize before hearing a word.
+# Two branches so the closer stays attached to the sentence it closes —
+# consuming it in the split silently dropped the quote from the text.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?][\"'”’)\]])\s+|(?<=[.!?])\s+")
+# Fallback break points inside a sentence that is still too long.
+_CLAUSE_END_RE = re.compile(r"[,;:—–)\]]\s")
 
 # The models still emit markdown despite being asked not to ("Today is
 # **Thursday**"), and it was going to the speech engine verbatim. Strip the
@@ -312,38 +367,105 @@ def _clean_for_speech(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
-def _split_for_speech(
-    text: str, first_min_chars: int = 40, min_chars: int = 140, max_chars: int = 300
-) -> list[str]:
-    """Break a reply into sentence-ish chunks for streaming synthesis.
+def _break_point(sentence: str, limit: int) -> int:
+    """Where to cut an over-long sentence: last clause end inside the
+    window, else the last word boundary, else the limit."""
+    window = sentence[: limit + 1]
+    ends = [m.end() for m in _CLAUSE_END_RE.finditer(window)]
+    if ends:
+        return ends[-1]
+    space = window.rfind(" ")
+    return space if space > limit // 2 else limit
 
-    The FIRST chunk is deliberately short and every later one is longer.
-    Measured against the live Sarvam API, synthesis cost is roughly a 0.6s
-    fixed overhead plus ~0.02s per character (4 chars 0.79s, 38 chars 1.46s,
-    142 chars 3.35s, 217 chars 5.34s) — so the only thing that decides how
-    long the user waits in silence is the length of the first chunk. Later
-    chunks are synthesized while earlier audio is still playing, where
-    there is plenty of slack (a 140-char chunk is ~9s of speech), so making
-    them bigger costs nothing and avoids choppy sentence-by-sentence
-    delivery. min_chars also stops us paying a whole round-trip for "Yes."
-    """
-    parts = [p.strip() for p in _SENTENCE_SPLIT_RE.split(text.strip()) if p.strip()]
-    chunks: list[str] = []
+
+def _speech_pieces(text: str, limit: int) -> list[str]:
+    """Sentences, with any sentence longer than `limit` broken at clause
+    and word boundaries. Nothing is discarded — the pieces rejoin to the
+    original words."""
+    pieces: list[str] = []
+    for sentence in _SENTENCE_SPLIT_RE.split((text or "").strip()):
+        sentence = " ".join(sentence.split())
+        while len(sentence) > limit:
+            cut = _break_point(sentence, limit)
+            head, sentence = sentence[:cut].strip(), sentence[cut:].strip()
+            if head:
+                pieces.append(head)
+        if sentence:
+            pieces.append(sentence)
+    return pieces
+
+
+# How long the opening chunk may get before it is cut at a clause. Only a
+# ceiling for an over-long FIRST sentence — a shorter one is left whole,
+# because breaking mid-clause ("...partly cloudy in" / "Jorhat.") to save
+# a second sounds worse than the second is worth.
+_FIRST_MAX_CHARS = 110
+
+# Per-chunk size ceiling, ramping up. Re-measured against the live Sarvam
+# API, median of 5 calls each (the old note here claimed 0.6s + 0.02s/char,
+# which no longer holds — and single samples are useless, one 12-char call
+# came back in 7.0s against a 1.18s median):
+#
+#     12 chars  1.18s      104 chars  6.88s
+#     52 chars  2.49s      196 chars  7.86s
+#
+# Steeply superlinear to ~100 chars, then flat, and worst on address- or
+# digit-heavy text. So time-to-first-word is decided almost entirely by
+# the size of chunk one, and the old code set a *minimum* on it with no
+# maximum at all — a reply that was one long sentence became one 200+ char
+# chunk and the user sat in silence for 9-11s (measured live from the
+# ttfw= field in /tmp/voice_loop.log). These are ceilings instead. The ramp
+# matters too: chunk N+1 is synthesized while chunk N plays, so a short
+# opener can only cover a similarly small follow-up before the pipeline
+# stalls and the reply audibly gaps.
+#
+_CHUNK_CEILINGS = (60, 130, 260)
+
+
+def _split_for_speech(
+    text: str,
+    first_max_chars: int = _FIRST_MAX_CHARS,
+    ceilings: tuple[int, ...] = _CHUNK_CEILINGS,
+    min_chars: int = 140,
+) -> list[str]:
+    """Break a reply into chunks for streaming synthesis, smallest first."""
+    # Sentences stay whole unless they are enormous; only the opening one
+    # is trimmed further, and only if it needs it.
+    pieces = _speech_pieces(text, ceilings[-1])
+    if not pieces:
+        return []
+    if len(pieces[0]) > first_max_chars:
+        cut = _break_point(pieces[0], first_max_chars)
+        head, tail = pieces[0][:cut].strip(), pieces[0][cut:].strip()
+        if head and tail:
+            pieces[:1] = [head, tail]
+
+    # The opening chunk is exactly one piece. It is the only thing standing
+    # between the user and the first word, and a second round trip for the
+    # rest is free — it happens while this one is already playing.
+    chunks: list[str] = [pieces[0]]
     buf = ""
-    for part in parts:
-        buf = f"{buf} {part}".strip() if buf else part
-        threshold = first_min_chars if not chunks else min_chars
-        if len(buf) >= threshold:
+    for piece in pieces[1:]:
+        ceiling = ceilings[min(len(chunks), len(ceilings) - 1)]
+        if buf and len(buf) + 1 + len(piece) > ceiling:
+            chunks.append(buf)
+            buf = piece
+            continue
+        buf = f"{buf} {piece}".strip() if buf else piece
+        if len(buf) >= min_chars:
             chunks.append(buf)
             buf = ""
     if buf:
         # A tiny trailing fragment rides along with the previous chunk
-        # rather than costing its own round-trip.
-        if chunks and len(buf) < 25:
+        # rather than costing its own round-trip — but never into the
+        # opening chunk, which is the one the user is waiting on. Merging
+        # there grew a 64-char opener to 88 to save a round trip that was
+        # already free, and paid for it in time-to-first-word.
+        if len(chunks) > 1 and len(buf) < 25:
             chunks[-1] = f"{chunks[-1]} {buf}"
         else:
             chunks.append(buf)
-    return [c[:max_chars] for c in chunks]
+    return chunks
 
 
 # Utterances shorter than this are never classified as an echo at all, and
@@ -457,7 +579,173 @@ CONFIRM_NO_RE = re.compile(
 # someone actually answering the question, so it's treated as a decline
 # rather than executed.
 CONFIRM_MAX_WORDS = 8
+# How many times to ask before giving up. A confirmation that heard only
+# Max's own voice has not been answered, and one re-ask costs a few
+# seconds where cancelling costs the user the whole request.
+CONFIRM_ATTEMPTS = 2
+# Let the speakers finish before opening the mic. See the use site.
+CONFIRM_SETTLE_SECONDS = 0.35
 
+# The literal instruction appended to every confirm prompt, which is what
+# the mic most often catches. Written as a pattern because Whisper
+# punctuates it freely: "yes or no.", "yes or no?", "say yes or no".
+_CONFIRM_ECHO_RE = re.compile(
+    r"\b(?:say\s+)?yes\s+or\s+no\b[\s,.?!—-]*", re.IGNORECASE
+)
+
+
+def _strip_confirm_echo(heard: str, spoken: str) -> str:
+    """`heard` with Max's own confirm prompt removed.
+
+    Measured live: with no acoustic echo cancellation the mic picks up the
+    tail of the prompt, so "yes or no? yes." arrived as the transcript of
+    a turn the user had answered YES. CONFIRM_NO_RE matched the "no" that
+    Max itself had said, negatives win outright, and the event was
+    silently dropped. Removing the prompt's own words first means the
+    yes/no test only ever sees what the user contributed.
+    """
+    text = _CONFIRM_ECHO_RE.sub(" ", (heard or "").lower())
+    # Whole words the prompt itself used are also echo, but only strip
+    # them from the front — a user answering "no, not the 11 labs one"
+    # must keep their words. Anything the user adds beyond the echo stops
+    # the strip.
+    prompt_words = set(re.findall(r"[a-z0-9']+", (spoken or "").lower()))
+    prompt_words -= {"yes", "no"}
+    words = text.split()
+    while words and re.sub(r"[^a-z0-9']", "", words[0]) in prompt_words:
+        words.pop(0)
+    return " ".join(words).strip(" ,.?!-")
+
+
+
+class _StreamingSpeaker:
+    """Speaks the reply while the model is still writing it.
+
+    The voice loop used to pass stream_callback=None, so the FULL answer
+    was generated, then split, then synthesized — the user heard nothing
+    until every one of those had finished. The machinery to do better
+    already existed on both sides: llm.py streams Groq and Gemini over
+    SSE (the web bridge has used it all along), and _speak_streaming
+    already overlaps synthesis with playback. This joins the two.
+
+    Three stages, each on its own thread so none blocks the next:
+
+        model tokens -> feed() -> text_q -> synthesize -> wav_q -> play
+
+    Only the plain-chat path streams; tool answers arrive complete and
+    keep using _speak_streaming, exactly as the bridge distinguishes them.
+    """
+
+    # Flush the opening line early even mid-sentence. The first chunk is
+    # the only thing between the user and the first word, and a model that
+    # opens with a 200-character sentence would otherwise hold it all back.
+    FIRST_FLUSH_CHARS = 70
+
+    def __init__(self, loop, language_code, barge_event, playback_active):
+        self.loop = loop
+        self.language_code = language_code
+        self.barge_event = barge_event
+        self.playback_active = playback_active
+        self.text_q: queue.Queue = queue.Queue()
+        self.wav_q: queue.Queue = queue.Queue()
+        self.buffer = ""
+        self.lock = threading.Lock()
+        self.spoke = False
+        self.interrupted = False
+        self.started_at = time.perf_counter()
+        self._synth = threading.Thread(target=self._synthesize, daemon=True)
+        self._play = threading.Thread(target=self._playback, daemon=True)
+        self._synth.start()
+        self._play.start()
+
+    # --- producer ------------------------------------------------------
+
+    def feed(self, piece: str) -> None:
+        """Called by llm.chat for every token as it arrives."""
+        if not piece or self.barge_event.is_set():
+            return
+        with self.lock:
+            self.buffer += piece
+            sentences, self.buffer = cli.tts.split_ready_sentences(self.buffer)
+            if not sentences and not self.spoke and len(self.buffer) >= self.FIRST_FLUSH_CHARS:
+                cut = self.buffer.rfind(" ", 0, self.FIRST_FLUSH_CHARS)
+                if cut > 20:
+                    sentences, self.buffer = [self.buffer[:cut]], self.buffer[cut:].lstrip()
+        for sentence in sentences:
+            self.spoke = True
+            self.text_q.put(sentence)
+
+    def finish(self) -> bool:
+        """Flush the tail and wait for playback. False if barged in."""
+        with self.lock:
+            tail, self.buffer = self.buffer.strip(), ""
+        if tail:
+            self.spoke = True
+            self.text_q.put(tail)
+        self.text_q.put(None)
+        self._synth.join(timeout=90)
+        self._play.join(timeout=90)
+        return not self.interrupted
+
+    def abandon(self) -> None:
+        """Shut the threads down without speaking anything more."""
+        self.barge_event.set()
+        self.text_q.put(None)
+
+    # --- stages --------------------------------------------------------
+
+    def _synthesize(self) -> None:
+        # Same contract as _speak_streaming.produce: the sentinel goes out
+        # on every exit path, or the playback thread waits forever.
+        try:
+            while True:
+                text = self.text_q.get()
+                if text is None or self.barge_event.is_set():
+                    return
+                clean = _clean_for_speech(text)
+                if not clean:
+                    continue
+                try:
+                    self.wav_q.put(
+                        speech.synthesize(clean, self.language_code, self.loop.cfg)
+                    )
+                except sarvam_client.SarvamError as e:
+                    print(f"(Sarvam TTS unavailable: {e})")
+                    return
+                except Exception as e:
+                    print(f"(TTS synthesis failed: {type(e).__name__}: {e})")
+                    traceback.print_exc()
+                    return
+        finally:
+            self.wav_q.put(None)
+
+    def _playback(self) -> None:
+        first = True
+        try:
+            while True:
+                wav_bytes = self.wav_q.get()
+                if wav_bytes is None:
+                    return
+                if self.barge_event.is_set():
+                    if not first:
+                        voice_events.speaking_stopped()
+                    self.interrupted = True
+                    return
+                if first:
+                    self.playback_active.set()
+                    first = False
+                    self.loop._last_ttfa = time.perf_counter() - self.started_at
+                voice_events.speaking(wav_bytes)
+                if not cli.tts.play(wav_bytes, stop_event=self.barge_event):
+                    voice_events.speaking_stopped()
+                    self.interrupted = True
+                    return
+        finally:
+            # Same reason as _speak_streaming: these frames are Max's own
+            # voice coming back through the mic and must not become the
+            # opening of the next recording.
+            with self.loop._barge_frames_lock:
+                self.loop._barge_frames.clear()
 
 
 class VoiceLoop:
@@ -488,12 +776,17 @@ class VoiceLoop:
             )
             if not self.wake_hotkey.start():
                 self.wake_hotkey = None
+        self.volume_keys = hotkey.VolumeKeys(on_change=self._on_volume_key)
+        if not self.volume_keys.start():
+            self.volume_keys = None
         self.silence_seconds = cfg.get("voice_silence_seconds", 0.7)
         self.no_speech_bail_seconds = cfg.get("voice_no_speech_bail_seconds", NO_SPEECH_BAIL_SECONDS)
         self.wake_listen_seconds = cfg.get("voice_wake_listen_seconds", WAKE_LISTEN_SECONDS)
         self.audio_q: queue.Queue = queue.Queue()
         self._last_frame_at = time.monotonic()
         self.wake_event = threading.Event()
+        # Unused for multi-turn follow-ups. Every command needs "Hey Max".
+        # Kept so older call sites that still write it do not crash.
         # Monotonic deadline for staying in "listening for follow-up" mode
         # without requiring the wake word again. None means "need the wake
         # word." Deliberately a timestamp, not the single-shot boolean this
@@ -505,6 +798,8 @@ class VoiceLoop:
         # kept turning on and off. A deadline that persists across empty
         # attempts and only expires after real inactivity fixes that.
         self.conversation_active_until: float | None = None
+        self._awaiting_command_after_name = False
+        self._woke_by_hotkey = False
         # When Max last stopped talking — the echo filter's time window.
         self._last_speech_ended_at = 0.0
         # Set by the barge-in watcher when the user said "stop <name>".
@@ -532,12 +827,16 @@ class VoiceLoop:
         # renamed product is exactly the sort of leftover that confuses
         # someone reading a log six months from now.
         self.wake_key = "wake" if self.wake_mode == "phrase" else self.wake_word
-        configure_wake_phrases(cfg.get("wake_phrases") or ["hey max"])
+        configure_wake_phrases(cfg.get("wake_phrases") or ["hey max", "max"])
         print(f'Loading local speech-to-text model (faster-whisper {cfg["voice_stt_model"]})...')
         self.whisper = WhisperModel(cfg["voice_stt_model"], device="cpu", compute_type="int8")
         if self.wake_mode == "phrase":
-            phrases = cfg.get("wake_phrases") or ["hey max"]
-            print(f'Loading wake phrase detector ("{phrases[0]}")...')
+            phrases = cfg.get("wake_phrases") or ["hey max", "max"]
+            print(
+                'Loading wake phrase detector ("'
+                + " or ".join(p.title() for p in phrases)
+                + '")...'
+            )
             # An empty wake_stt_model means "share the command model above"
             # — no second download, no extra memory, and better recall than
             # a smaller one (see max/wake_phrase.py).
@@ -576,6 +875,7 @@ class VoiceLoop:
             print("(Wake hotkey — turning the microphone back on.)", flush=True)
             control.set_mic_muted(False)
         print("(Wake hotkey — listening.)", flush=True)
+        self._play_ack_tone(clear_preroll=False, block=False)
         self.trigger_wake()
 
     def trigger_interrupt(self) -> None:
@@ -592,6 +892,12 @@ class VoiceLoop:
         self._ptt_interrupt = True
         self.trigger_wake()
 
+    def _on_volume_key(self, direction: str) -> None:
+        from max import tts
+        delta = tts.VOLUME_STEP if direction == "up" else -tts.VOLUME_STEP
+        level = tts.adjust_volume(delta)
+        print(f"  voice volume: {level}%", flush=True)
+
     def _on_push_to_talk(self) -> None:
         """Hotkey pressed: start a turn immediately, wherever we were.
 
@@ -603,6 +909,7 @@ class VoiceLoop:
         self._interrupt_source = "Push-to-talk"
         self._ptt_interrupt = True
         print("(Push-to-talk — listening.)", flush=True)
+        self._play_ack_tone(clear_preroll=False, block=False)
         self.trigger_wake()
 
     def _audio_callback(self, indata, frames, time_info, status):
@@ -708,11 +1015,19 @@ class VoiceLoop:
             print(f"  wake hotkey: {self.wake_hotkey.describe()} to start a turn "
                   "from any app")
         if self.push_to_talk is not None:
-            print(f"  push-to-talk: hold {self.push_to_talk.describe()} and speak "
-                  "(no wake word needed, works over music and noise)")
-            if not self.push_to_talk.saw_any_event and (
-                self.wake_hotkey is None or not self.wake_hotkey.saw_any_event
-            ):
+            print(f"  push-to-talk: hold {self.push_to_talk.describe()} and say "
+                  f'"{self.wake_label()}" then the command')
+        if self.volume_keys is not None:
+            from max import tts
+            print(f"  voice volume: {tts.get_volume()}% — keyboard volume keys "
+                  "or the HUD slider, say 'quieter' / 'louder'")
+            # Both listeners are optional — push_to_talk is None whenever
+            # push_to_talk_enabled is false or the tap failed to start, and
+            # dereferencing it here took the whole startup down with an
+            # AttributeError inside calibrate().
+            ptt_silent = self.push_to_talk is None or not self.push_to_talk.saw_any_event
+            wake_silent = self.wake_hotkey is None or not self.wake_hotkey.saw_any_event
+            if ptt_silent and wake_silent:
                 # pynput's listener starts fine without permission and then
                 # never receives anything, so say it out loud rather than
                 # letting the key appear to do nothing.
@@ -730,21 +1045,25 @@ class VoiceLoop:
         actually loaded, so the banner can never advertise a phrase that
         isn't the one being listened for."""
         if self.wake_mode == "phrase":
-            return " ".join(w.capitalize() for w in self.wake_model.describe().split())
+            return self.wake_model.describe()
         return self.wake_word.replace("_", " ").title()
 
     def listen_for_wake_word(self) -> None:
         self.wake_model.reset()
+        self._woke_by_hotkey = False
         if self.wake_event.is_set():
             self.wake_event.clear()
+            self._woke_by_hotkey = True
             return
         while True:
             if self.wake_event.is_set():
                 self.wake_event.clear()
+                self._woke_by_hotkey = True
                 return
             frame = self._next_frame()
             prediction = self.wake_model.predict(frame)
             if prediction.get(self.wake_key, 0.0) > WAKE_THRESHOLD:
+                self._woke_by_hotkey = False
                 return
 
     def _watch_for_barge_in(
@@ -823,16 +1142,32 @@ class VoiceLoop:
                 stop_event.set()
                 return
 
-    def _play_ack_tone(self) -> None:
-        try:
-            subprocess.run(["afplay", _ack_tone_path()], capture_output=True, timeout=5)
-        except Exception:
-            return  # a missing chime must never take down a turn
-        # The tone is our own output, so make sure it can't survive in the
-        # pre-roll deque and get prepended to the user's utterance — the
-        # same path that made Max's speech bleed into recordings.
-        with self._barge_frames_lock:
-            self._barge_frames.clear()
+    def _play_ack_tone(self, *, clear_preroll: bool = True, block: bool = True) -> None:
+        def _run() -> None:
+            try:
+                subprocess.run(["afplay", _ack_tone_path()], capture_output=True, timeout=5)
+            except Exception:
+                return
+            # Hotkey chime must not wipe speech that started on the press.
+            if clear_preroll:
+                with self._barge_frames_lock:
+                    self._barge_frames.clear()
+
+        if block:
+            _run()
+        else:
+            threading.Thread(target=_run, daemon=True).start()
+
+    def _take_queued_frames(self) -> np.ndarray:
+        frames: list[np.ndarray] = []
+        while not self.audio_q.empty():
+            try:
+                frames.append(self.audio_q.get_nowait())
+            except queue.Empty:
+                break
+        if not frames:
+            return np.array([], dtype=np.int16)
+        return np.concatenate(frames)
 
     def record_while_held(self, max_seconds: float = MAX_UTTERANCE_SECONDS) -> tuple[np.ndarray, bool]:
         """Record for exactly as long as the push-to-talk key is held.
@@ -842,8 +1177,13 @@ class VoiceLoop:
         that has been dropping utterances can drop one here. Whisper still
         decides whether there were words in it.
         """
-        self._drain_queue()
+        # Do not drain: the command is already in the queue from the
+        # moment they pressed the key. Drain was why "good morning" had
+        # to be said five times.
         frames: list[np.ndarray] = []
+        queued = self._take_queued_frames()
+        if queued.size:
+            frames.append(queued)
         max_chunks = int(max_seconds * SAMPLE_RATE / FRAME_SAMPLES)
         # A short floor so an accidental quick tap still yields something
         # transcribable rather than a zero-length buffer.
@@ -970,15 +1310,32 @@ class VoiceLoop:
         wav_q: queue.Queue = queue.Queue()
 
         def produce() -> None:
-            for chunk in chunks:
-                if barge_event.is_set():
-                    break
-                try:
-                    wav_q.put(sarvam_client.text_to_speech(chunk, language_code=language_code))
-                except sarvam_client.SarvamError as e:
-                    print(f"(Sarvam TTS unavailable: {e})")
-                    break
-            wav_q.put(None)
+            # The sentinel MUST be posted on every exit path. The consumer
+            # below blocks on wav_q.get() with no timeout, so a producer that
+            # dies without posting it hangs the turn — and the whole voice
+            # loop — forever, with no traceback anywhere the user can see and
+            # no way for barge-in to break it (the consumer is blocked before
+            # it ever checks barge_event). That is exactly what happened: a
+            # urllib *read* timeout raises a bare TimeoutError, which is not a
+            # URLError and so was never wrapped as SarvamError; it escaped
+            # this thread and Max went permanently silent. The bare `except
+            # Exception` is deliberate — anything at all coming out of
+            # synthesis costs one spoken reply, never the process.
+            try:
+                for chunk in chunks:
+                    if barge_event.is_set():
+                        break
+                    try:
+                        wav_q.put(speech.synthesize(chunk, language_code, self.cfg))
+                    except sarvam_client.SarvamError as e:
+                        print(f"(Sarvam TTS unavailable: {e})")
+                        break
+                    except Exception as e:
+                        print(f"(TTS synthesis failed: {type(e).__name__}: {e})")
+                        traceback.print_exc()
+                        break
+            finally:
+                wav_q.put(None)
 
         threading.Thread(target=produce, daemon=True).start()
 
@@ -989,6 +1346,11 @@ class VoiceLoop:
                 if wav_bytes is None:
                     return True
                 if barge_event.is_set():
+                    # Only if an envelope already went out: the UI holds the
+                    # last one until it runs out, so a barge-in between
+                    # chunks leaves the orb mouthing a sentence that stopped.
+                    if not first:
+                        voice_events.speaking_stopped()
                     return False
                 if first:
                     # Arm barge-in only once there's real audio, not during
@@ -1023,9 +1385,19 @@ class VoiceLoop:
     def transcribe(self, audio: np.ndarray, language_code: str | None = None) -> str:
         if audio.size == 0:
             return ""
-        # Whisper small.en cannot hear Assamese (or Hindi). Once the
-        # conversation is in a Sarvam language, send the utterance to
-        # Saaras instead so the user can actually talk back.
+        # Local English whisper first on short clips. "Good morning" was
+        # waiting 1.4s on Saaras every time even though the wake model
+        # already heard it in English.
+        audio_float = audio.astype(np.float32) / 32768.0
+        if language_code in ("as-IN", "hi-IN") and audio.size < 5 * SAMPLE_RATE:
+            try:
+                segs, _ = self.whisper.transcribe(audio_float, language="en", beam_size=1)
+                local = " ".join(s.text.strip() for s in segs).strip()
+            except Exception:
+                local = ""
+            if local and cli._assamese_is_greeting(local):
+                print(f"  (local stt, skip Saaras: {local!r})")
+                return local
         if language_code in ("as-IN", "hi-IN"):
             wav_bytes = sarvam_client.pcm16_to_wav(
                 np.ascontiguousarray(audio, dtype=np.int16).tobytes(),
@@ -1033,15 +1405,14 @@ class VoiceLoop:
             )
             try:
                 text, detected = sarvam_client.speech_to_text(
-                    wav_bytes, language_code=language_code, mode="codemix"
+                    wav_bytes, language_code=language_code, mode="transcribe"
                 )
             except sarvam_client.SarvamError as e:
                 print(f"(Sarvam STT unavailable: {e})")
                 return ""
             if detected and detected != language_code:
                 print(f"  (Saaras heard {detected})")
-            return text
-        audio_float = audio.astype(np.float32) / 32768.0
+            return sarvam_client.odia_to_assamese(text)
         segments, _ = self.whisper.transcribe(audio_float, language="en", beam_size=1)
         return " ".join(seg.text.strip() for seg in segments).strip()
 
@@ -1067,7 +1438,23 @@ class VoiceLoop:
                 processing_active.set()
 
     def _voice_confirm_inner(self, prompt: str) -> bool:
-        print(f"[Router] {prompt}")
+        for attempt in range(CONFIRM_ATTEMPTS):
+            answer = self._ask_once(prompt, reask=attempt > 0)
+            if answer is not None:
+                return answer
+        print("  (no clear answer after asking twice — treating as no.)")
+        return False
+
+    def _ask_once(self, prompt: str, reask: bool) -> bool | None:
+        """True/False for a clear answer, None if nothing usable was heard.
+
+        None is NOT the same as no: a confirmation that only picked up
+        Max's own prompt coming back through the mic has not been answered
+        at all, and cancelling on it threw away work the user had asked
+        for. The caller asks again instead.
+        """
+        spoken = ("Sorry — yes or no?" if reask else prompt + " Say yes or no.")
+        print(f"[Router] {spoken if reask else prompt}")
         # Was self.speak() (cli.speak_response -> Piper), left over from
         # before the Bulbul-everywhere switch — every other reply plays
         # through Sarvam now, so the confirm prompt suddenly speaking in a
@@ -1077,9 +1464,16 @@ class VoiceLoop:
         # that switch — just report and move on.
         if self.cfg.get("tts_enabled"):
             try:
-                wav_bytes = sarvam_client.text_to_speech(prompt + " Say yes or no.", language_code="en-IN")
+                wav_bytes = speech.synthesize(spoken, "en-IN", self.cfg)
                 voice_events.speaking(wav_bytes)
                 cli.tts.play(wav_bytes)
+                # cli.tts.play returns when the player exits, but the last
+                # fraction of a second is still leaving the speakers. This
+                # Mac has no acoustic echo cancellation, so without a
+                # settle the recording below opens on Max's own trailing
+                # words — measured live, the mic caught "yes or no" from
+                # this very prompt and CONFIRM_NO_RE cancelled the turn.
+                time.sleep(CONFIRM_SETTLE_SECONDS)
             except sarvam_client.SarvamError as e:
                 print(f"(Sarvam TTS unavailable: {e})")
         print("(listening for yes/no...)")
@@ -1088,16 +1482,24 @@ class VoiceLoop:
             print("  (heard: nothing above the noise floor — treating as no.)")
             return False
 
-        text = self.transcribe(audio).lower().strip()
-        print(f"  (heard: {text!r})")
+        raw = self.transcribe(audio).lower().strip()
+        text = _strip_confirm_echo(raw, spoken)
+        if text != raw:
+            print(f"  (heard: {raw!r} -> {text!r} after removing Max's own prompt)")
+        else:
+            print(f"  (heard: {raw!r})")
         if not text:
-            return False
+            # Everything heard was the prompt echoing back. Nothing was
+            # answered, so ask again rather than cancel.
+            return None
         if CONFIRM_NO_RE.search(text):
             return False
         if len(text.split()) > CONFIRM_MAX_WORDS:
             print("  (heard something too long/ambiguous to count as a clear yes — treating as no.)")
             return False
-        return bool(CONFIRM_YES_RE.search(text))
+        if CONFIRM_YES_RE.search(text):
+            return True
+        return None
 
     def run(self) -> None:
         mem = MemoryStore()
@@ -1253,30 +1655,34 @@ class VoiceLoop:
                 last_reply_text = ""
 
     def _keep_listening(self) -> None:
-        """Stay in the conversation after a name-only wake.
+        """They said Hey Max and nothing else — wait once for the command.
 
-        `_force_wake_listen` only changed the *next record timeout*. The
-        next turn still called listen_for_wake_word() because the
-        conversation window is set at the *end* of a completed turn —
-        name-only returns early, so the window was never opened. Seen
-        live: "Hey Oren" chimed, then the actual command was ignored
-        until they said the wake phrase again.
+        Does not open a follow-up window. The next speech is the rest of
+        this line. After the answer, Hey Max is required again.
         """
         self._force_wake_listen = True
-        window = self.cfg.get("voice_conversation_window_seconds", 45)
-        self.conversation_active_until = time.monotonic() + window
+        self._awaiting_command_after_name = True
+        self.conversation_active_until = None
+
+    def _close_listen_window(self) -> None:
+        self.conversation_active_until = None
+        self._force_wake_listen = False
+        self._awaiting_command_after_name = False
 
     def _run_one_turn(self, mem: MemoryStore, last_reply_text: str) -> str:
-        already_in_conversation = (
+        already_in_conversation = bool(
             getattr(self, "_force_wake_listen", False)
-            or (
-                self.conversation_active_until is not None
-                and time.monotonic() < self.conversation_active_until
-            )
+            or getattr(self, "_awaiting_command_after_name", False)
         )
         if already_in_conversation:
-            remaining = self.conversation_active_until - time.monotonic()
-            listening_banner = f"(Listening for your follow-up — window open {remaining:.0f}s more...)"
+            # listen_for_wake_word() is skipped on this path, and that is
+            # the only place this flag was ever cleared — so a hotkey wake
+            # that fell through to "just the name, listening for the rest"
+            # left it set, and the follow-up turn took the hotkey branch
+            # below: no drain, no chime, for speech nobody pressed a key
+            # for. Continuing a line is never a hotkey wake.
+            self._woke_by_hotkey = False
+            listening_banner = f"(Heard {self.wake_label()} — listening for the rest of the line...)"
         else:
             # About to go idle on the wake word, so hand the music back
             # before waiting. Pause/resume is per CONVERSATION, not per
@@ -1297,14 +1703,45 @@ class VoiceLoop:
             # Quiet the music for the whole conversation before cueing the
             # user, so neither the chime nor their reply competes with it.
             spotify.pause_for_conversation()
-            # Tell the user we're listening. Only on a fresh wake, not on
-            # follow-ups — a chime before every turn of a live conversation
-            # is noise, and that matches how Siri/Alexa/Google behave too.
-            self._play_ack_tone()
+            # Do not chime here. Phrase wake already has the full line
+            # ("Max, what's the weather") — a chime before we use that
+            # audio used to eat the request, especially after a short
+            # "Max". Chime only when we still need them to speak.
         return self._handle_turn_audio(
             mem, last_reply_text, already_in_conversation, turn_start, wake_detected_at,
-            woke_by_name=not already_in_conversation,
+            woke_by_name=not already_in_conversation and not getattr(self, "_woke_by_hotkey", False),
         )
+
+    def _streaming_helps(self) -> bool:
+        """True only when the assigned voice model streams progressively.
+
+        A reasoning model does its thinking first and then emits the whole
+        answer in a burst, so there is nothing to overlap: measured on
+        gpt-oss-20b, first content token 0.96s against 1.01s for the full
+        reply. Streaming it was actively WORSE end to end — 3.14s to the
+        first spoken word against 2.62s buffered — because the reply got
+        split across two synthesis round trips to gain 0.05s of overlap.
+
+        The buffered path already sends a deliberately tiny opening chunk
+        (see _split_for_speech), which is where that speed comes from.
+        So: stream when the model really streams, otherwise don't. The
+        machinery stays wired, and switching the voice role to a
+        non-reasoning model turns it on by itself.
+        """
+        entry = llm.resolve(self.cfg, "voice")
+        if entry["provider"] == "ollama":
+            return True          # local models emit token by token
+        return not llm._is_reasoning_model(entry.get("model", ""))
+
+    def _reply_language(self, mem) -> str:
+        """Which voice to synthesize in, decided BEFORE the reply exists.
+
+        The streaming speaker has to be built before the first token
+        arrives, so it cannot look at the finished text the way the
+        non-streaming path does. The conversation language is the same
+        signal process_turn itself routes on, so it agrees by construction.
+        """
+        return "as-IN" if cli.get_conversation_language(mem) == "as-IN" else "en-IN"
 
     def _handle_turn_audio(
         self,
@@ -1330,34 +1767,79 @@ class VoiceLoop:
         # answer at all. Clearing it here means only an interrupt during
         # this turn can stop this turn.
         self._ptt_interrupt = False
+        # Reset per turn: a turn that never speaks used to report the
+        # PREVIOUS turn's figure, so the log showed ttfw=1.57s next to
+        # speak=0.00s four times running.
+        self._last_ttfa = None
 
         pending = None
+        open_seg = None
         if self.wake_mode == "phrase":
             pending = self.wake_model.take_pending_audio()
-            if pending is not None and _is_bare_wake_phrase(self.wake_model.last_transcript):
-                # Just the name and nothing else: that is someone getting
-                # our attention before they have decided what to say, so
-                # fall through and listen properly instead of handing the
-                # LLM its own wake phrase as a question.
-                pending = None
+            open_seg = self.wake_model.take_open_segment()
+            # Short clip whose English wake transcript is only the name:
+            # they said "Max" and the request is still coming. Do not send
+            # "ম্যাক্স।" to Sarvam — that produced the looping
+            # "তুমি আকৌ একো নিলিখিলা" line. Keep longer clips: English
+            # Whisper often writes only "Max." while the same audio still
+            # has the Assamese command.
+            if pending is not None and pending.size:
+                dur = pending.size / SAMPLE_RATE
+                wake_tr = self.wake_model.last_transcript or ""
+                if _is_bare_wake_phrase(wake_tr) and dur < 1.6:
+                    print("(Just the name — listening for the rest of the line.)")
+                    pending = None
+                    self._keep_listening()
+                    already_in_conversation = True
 
         if pending is not None and pending.size:
             # The phrase detector fires at the END of the utterance, so
-            # "hey max, what's the weather" is already recorded in full by
-            # the time we get here. Recording again would capture the
-            # silence after it and answer "didn't catch anything" to a
-            # question the user had just finished asking. Reuse the audio
-            # instead — same words, no second pass, and a turn that starts
-            # sooner than the wake-word model's did.
+            # "hey max, what's the weather" / "max, ..." is already
+            # recorded in full. Reuse it — same words, no second pass.
             self._force_wake_listen = False
             audio, heard_speech = pending, True
-        elif self.push_to_talk is not None and self.push_to_talk.held.is_set():
-            # Key is down: exact boundaries, none of the guessing below.
+        elif getattr(self, "_woke_by_hotkey", False):
+            # They already pressed the key and usually already spoke.
+            # Stitch detector leftover + queued mic frames. Do not drain.
             self._force_wake_listen = False
-            audio, heard_speech = self.record_while_held()
+            parts = [p for p in (open_seg, self._take_queued_frames()) if p is not None and p.size]
+            if self.push_to_talk is not None and self.push_to_talk.held.is_set():
+                more, _ = self.record_while_held()
+                if more.size:
+                    parts.append(more)
+            buffered = np.concatenate(parts) if parts else np.array([], dtype=np.int16)
+            if buffered.size >= _PTT_MIN_COMMAND_SAMPLES:
+                audio = buffered
+                heard_speech = True
+                print(f"  (debug: ptt-keep {audio.size / SAMPLE_RATE:.1f}s, no drain)")
+            else:
+                # Too short to be a command, so do not pretend it is one.
+                #
+                # This branch used to accept ANY non-empty buffer and set
+                # heard_speech=True. Tapping the key rather than holding it
+                # leaves `held` already clear by the time we look, so all
+                # that existed was ~0.2s of pre-roll — measured live at 0.2,
+                # 0.8, 0.2s. Whisper returns nothing useful for that, so the
+                # turn burned a round trip, announced "Just my name", and
+                # only THEN began listening — by which point the user had
+                # already said the command into a closed window and had to
+                # repeat it. Seven of those detours in one session.
+                #
+                # Keep the pre-roll (they may have started talking on the
+                # press) and actually listen for the rest.
+                if buffered.size:
+                    print(f"  (debug: ptt pre-roll {buffered.size / SAMPLE_RATE:.1f}s "
+                          f"— too short for a command, listening)")
+                    with self._barge_frames_lock:
+                        self._barge_frames.appendleft(buffered)
+                audio, heard_speech = self.record_utterance(
+                    bail_seconds=self.wake_listen_seconds
+                )
         else:
             expecting_speech = not already_in_conversation or getattr(self, "_force_wake_listen", False)
             self._force_wake_listen = False
+            if not already_in_conversation:
+                self._play_ack_tone()
             audio, heard_speech = self.record_utterance(
                 bail_seconds=self.wake_listen_seconds if expecting_speech else None
             )
@@ -1378,7 +1860,8 @@ class VoiceLoop:
             peak = getattr(self, "_last_peak_rms", 0.0)
             max_vad = getattr(self, "_last_max_vad", 0.0)
             if peak <= self.silence_rms_threshold:
-                print("(Didn't catch anything.)\n")
+                print(f"(Didn't catch anything — say {self.wake_label()} again.)\n")
+                self._close_listen_window()
                 return last_reply_text
             # High RMS + low VAD is the room (Spotify, TV), not a missed
             # utterance. Transcribing it produced live lyric fragments
@@ -1389,57 +1872,64 @@ class VoiceLoop:
                     f"(Ignoring — loud but not speech, VAD {max_vad:.2f} "
                     f"RMS {peak:.0f}.)\n"
                 )
+                self._close_listen_window()
                 return last_reply_text
             print(f"  (VAD said no speech but peak RMS {peak:.0f} / VAD {max_vad:.2f} "
                   f"is above the noise floor {self.silence_rms_threshold:.0f} — transcribing anyway)")
         text = self.transcribe(audio, language_code=cli.get_conversation_language(mem))
+        wake_tr = getattr(self.wake_model, "last_transcript", "") or ""
+        # Wake already heard English "Good morning Max" while Saaras
+        # wrote Odia. Prefer the wake line when it is a greeting.
+        if cli._assamese_is_greeting(wake_tr) and (
+            not text or sarvam_client._has_odia(text) or cli._assamese_is_greeting(text)
+        ):
+            text = wake_tr
         transcription_done_at = time.perf_counter()
-
-        if not text:
-            # Used to auto-relax silence_rms_threshold here after
-            # repeated misses, to correct for a miscalibrated RMS
-            # threshold. VAD-based heard_speech (see
-            # record_utterance) doesn't need per-room calibration in
-            # the first place, so that workaround — and its side
-            # effect of also lowering barge_in_threshold, observed
-            # live making barge-in fire on near-ambient noise — is
-            # gone along with the problem it was working around.
-            print("(Didn't catch anything.)\n")
+        # ALWAYS say what came back, including nothing. This used to print
+        # "Didn't catch anything" and discard the text unseen, which made
+        # the most common real failure undiagnosable from the log: four
+        # utterances in one session were recorded at RMS 2300-3700 with VAD
+        # 1.00 — unambiguous speech — and dropped, with no way to tell
+        # whether Whisper returned empty or _is_empty_command() classified
+        # a real command as the bare wake word. Those are opposite bugs
+        # with opposite fixes, and guessing between them is how this got
+        # worse before.
+        stt_seconds = transcription_done_at - utterance_done_at
+        if not text or _is_empty_command(text):
+            why = "empty transcript" if not text.strip() else "matched the wake phrase only"
+            print(
+                f"  (stt {stt_seconds:.2f}s on {audio.size / SAMPLE_RATE:.1f}s of audio"
+                f" -> {text!r}: {why})"
+            )
+            if getattr(self, "_awaiting_command_after_name", False):
+                print(f"(Didn't catch anything — say {self.wake_label()} again.)\n")
+                self._close_listen_window()
+                return last_reply_text
+            print("(Just my name — listening for what you need.)\n")
+            self._keep_listening()
             return last_reply_text
-
-        print(f"You said: {text}")
+        if stt_seconds > 2.0:
+            # Whisper on a few seconds of audio is normally well under a
+            # second; anything near ten means something else is eating the
+            # CPU (measured: 8.54s while a local 7B reflection ran).
+            print(f"  (stt took {stt_seconds:.2f}s — something else is using the CPU)")
 
         if already_in_conversation and _is_bare_wake_phrase(text):
-            # Answer it. This branch used to return in total silence: no
-            # chime (that only fires on a fresh wake) and no spoken reply,
-            # so calling Max by name during an open window produced
-            # nothing observable whatsoever. Seen live, the user said "Hey
-            # Max" four times in a row and got silence every time, which
-            # is indistinguishable from the whole thing being broken — the
-            # exact "I say the name and nothing happens" complaint. The
-            # chime says "I'm here, go ahead", and the flag below gives
-            # them the full wake-length window to actually say something
-            # rather than the 3s a speculative follow-up listen gets.
-            print("(Already listening — chiming so you know, go ahead.)\n")
-            self._play_ack_tone()
+            print("(Already listening — go ahead.)\n")
             self._keep_listening()
             return last_reply_text
 
         if self.wake_mode == "phrase":
             text = _strip_matched_name(text, self.wake_model.last_match_token)
         text = _strip_leading_wake_phrase(text)
+        text = wake_phrase.strip_address_name(text)
 
-        if not text.strip():
-            # Nothing left once the name came off: they called Max and
-            # said nothing else. Seen live as "You said: Hey, Oren." ->
-            # "Good day to you too, Oren." — the stripper had a
-            # `stripped or original` fallback, so a name-only utterance
-            # was handed to the model verbatim, which then read the
-            # misheard name as the user's own and started using it.
+        if _is_empty_command(text):
             print("(Just my name — listening for what you need.)\n")
-            self._play_ack_tone()
             self._keep_listening()
             return last_reply_text
+
+        print(f"You said: {text}")
 
         # The echo filter only applies to speech that could physically BE
         # an echo: Max's voice reaching the mic while, or just after, it
@@ -1478,9 +1968,8 @@ class VoiceLoop:
             # loop process — you'd have to restart Max just to
             # get it to stop talking. This just cancels the current
             # turn and goes back to listening.
-            print("(Stopping — standing by. Say the name when you need me.)\n")
-            self.conversation_active_until = None
-            self._force_wake_listen = False
+            print("(Stopping — standing by. Say Hey Max when you need me.)\n")
+            self._close_listen_window()
             return last_reply_text
 
         barge_event = threading.Event()
@@ -1514,6 +2003,16 @@ class VoiceLoop:
             )
             barge_monitor.start()
 
+        # Speak while the model is still writing. Only the plain-chat
+        # path calls stream_callback (see cli.handle_ollama); a tool answer
+        # arrives complete and falls through to _speak_streaming below,
+        # exactly as the web bridge distinguishes the two.
+        speaker = None
+        if self.cfg.get("tts_enabled") and self._streaming_helps():
+            speaker = _StreamingSpeaker(
+                self, self._reply_language(mem), barge_event, playback_active
+            )
+
         processing_active.set()
         try:
             backend, response = cli.process_turn(
@@ -1531,16 +2030,17 @@ class VoiceLoop:
                 model_override=self._voice_model_override(),
                 model_role="voice",
                 ollama_options={"num_predict": self.cfg.get("voice_ollama_max_tokens", 128)},
-                stream_callback=None,
+                stream_callback=speaker.feed if speaker else None,
                 source="voice",
             )
         except (cli.claude_handoff.Cancelled, cli.shell.Cancelled):
-            print("(Cancelled — ready for your next instruction.)\n")
+            print("(Cancelled — say Hey Max for the next instruction.)\n")
+            if speaker is not None:
+                speaker.abandon()
             barge_event.set()
             if barge_monitor is not None:
                 barge_monitor.join(timeout=1)
-            window = self.cfg.get("voice_conversation_window_seconds", 180)
-            self.conversation_active_until = time.monotonic() + window
+            self._close_listen_window()
             return ""
         finally:
             processing_active.clear()
@@ -1548,15 +2048,22 @@ class VoiceLoop:
         print(f"{cli.label(backend)} {response}\n")
         last_reply_text = response
         interrupted = barge_event.is_set()
-        # Every reply now goes through Bulbul (Sarvam's TTS), not
-        # just Sarvam-backed turns — user explicitly chose one
-        # consistent Indian-accented voice over Piper's British
-        # voice + per-sentence streaming, accepting the resulting
-        # wait for full non-streaming synthesis on every turn.
+        # Everything goes out through Bulbul (Sarvam's TTS) — one
+        # consistent voice rather than Piper's British one.
         if interrupted:
+            if speaker is not None:
+                speaker.abandon()
             print("(Skipping speech output because you already barged in.)")
+        elif speaker is not None and speaker.spoke:
+            # The reply streamed: playback started while the model was
+            # still writing, and finish() only waits for the tail.
+            interrupted = not speaker.finish()
         elif self.cfg.get("tts_enabled"):
+            if speaker is not None:
+                speaker.abandon()
             language_code = backend.split(":", 1)[1] if backend.startswith("sarvam:") else "en-IN"
+            if re.search(r"[\u0980-\u09FF]", response or ""):
+                language_code = "as-IN"
             interrupted = not self._speak_streaming(
                 response, language_code, barge_event, playback_active
             )
@@ -1565,23 +2072,31 @@ class VoiceLoop:
         self._last_speech_ended_at = time.monotonic()
         if barge_monitor is not None:
             barge_monitor.join(timeout=1)
-        # A wake starts a conversational session. Every completed
-        # turn (interrupted or not) refreshes the window so the user
-        # doesn't need to repeat the wake phrase for as long as the
-        # conversation stays active — including through any number
-        # of quiet/missed attempts in between, unlike the old
-        # single-shot flag this replaced.
-        window = self.cfg.get("voice_conversation_window_seconds", 180)
-        if self._stop_requested:
-            # "Stop Max" means be quiet, not "I'm about to say something
-            # else". Closing the window here is the difference between
-            # stopping and stopping-then-staring-at-you-expectantly; the
-            # user can reopen it any time by saying the name again.
-            self._stop_requested = False
-            self.conversation_active_until = None
-            self._force_wake_listen = False
+
+        # A barge-in that was the WAKE PHRASE is a new command, not just a
+        # request for silence — "Max, can you play something" said while
+        # Max is still working means both "stop" and "here is the next
+        # thing". The wake detector already captured that utterance in
+        # pending_audio, but the turn used to end by closing the window,
+        # which sent the loop back to waiting for a wake word and threw
+        # the command away. Measured live: four replies in a row spoke
+        # nothing and every follow-up request vanished — Max looked like
+        # it was running with nothing connected to anything.
+        #
+        # An explicit "Max stop" is the opposite and must still go quiet,
+        # which is what _stop_requested distinguishes.
+        pending_command = (
+            self.wake_mode == "phrase"
+            and not self._stop_requested
+            and getattr(self.wake_model, "pending_audio", None) is not None
+            and self.wake_model.pending_audio.size > 0
+        )
+        self._stop_requested = False
+        if pending_command:
+            print("(Heard a new request while working — taking it now.)")
+            self._keep_listening()
         else:
-            self.conversation_active_until = time.monotonic() + window
+            self._close_listen_window()
         spoken_done_at = time.perf_counter()
         # ttfw (time to first word) is the number that actually describes
         # how responsive this feels; the old single "tts=" figure lumped it

@@ -153,6 +153,13 @@ def _post(url: str, body: dict, headers: dict, timeout: int, stream: bool = Fals
         raise LLMError(f"HTTP {e.code}{': ' + detail if detail else ''}") from e
     except urllib.error.URLError as e:
         raise LLMError(f"could not reach the API ({e.reason})") from e
+    # A timeout while *reading* the response is raised bare, not wrapped in
+    # URLError — so without this a slow cloud model escaped as something
+    # chat()'s callers don't catch, and handle_ollama's whole point (fall
+    # back to the local model rather than lose the turn) never ran. The
+    # 8s cloud timeout above makes this the likely failure, not a rare one.
+    except TimeoutError as e:
+        raise LLMError(f"the API timed out ({e})") from e
 
 
 def _sse_lines(response):
@@ -170,6 +177,19 @@ def _sse_lines(response):
             continue
 
 
+# Models that think before they answer, and bill the thinking to the same
+# token budget as the reply. Left alone they spend the whole cap on hidden
+# reasoning and return an EMPTY message — measured on gpt-oss-20b at our
+# 80-token voice cap, which would have been a silent dead turn every time.
+# reasoning_effort="low" brings a one-sentence answer in 33-44 tokens.
+_REASONING_MODELS = ("gpt-oss", "qwen3", "o1", "o3")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    lowered = (model or "").lower()
+    return any(tag in lowered for tag in _REASONING_MODELS)
+
+
 def _chat_groq(messages, model, options, stream_callback, timeout):
     key = _api_key("groq")
     if not key:
@@ -177,15 +197,25 @@ def _chat_groq(messages, model, options, stream_callback, timeout):
     body = {"model": model, "messages": messages}
     if options and options.get("num_predict"):
         body["max_tokens"] = options["num_predict"]
+    if _is_reasoning_model(model):
+        body["reasoning_effort"] = "low"
     headers = {"Authorization": f"Bearer {key}"}
 
     if stream_callback is None:
         with _post(GROQ_URL, body, headers, timeout) as response:
             data = json.loads(response.read())
         try:
-            return data["choices"][0]["message"]["content"].strip()
+            content = (data["choices"][0]["message"].get("content") or "").strip()
         except (KeyError, IndexError):
             raise LLMError("no reply in the response")
+        if not content:
+            # A reasoning model that spent its whole budget thinking.
+            # Raising lets the caller fall back instead of speaking "".
+            raise LLMError(
+                f"{model} returned an empty reply — the token budget went on "
+                "reasoning; raise num_predict for this call"
+            )
+        return content
 
     body["stream"] = True
     pieces = []
@@ -251,82 +281,6 @@ def _chat_gemini(messages, model, options, stream_callback, timeout):
     return "".join(pieces).strip()
 
 
-def chat_tools(
-    messages: list[dict],
-    entry: dict,
-    cfg: dict,
-    tools: list[dict],
-    options: dict | None = None,
-    timeout: int = 120,
-) -> dict:
-    """One chat turn that may emit tool calls.
-
-    Returns {"content": str, "tool_calls": [{"id", "name", "arguments"}]}.
-    Groq speaks OpenAI tools natively. Ollama is best-effort via its tools
-    field. Gemini has no tool path here — callers should not send it one.
-    """
-    provider = entry["provider"]
-    model = entry["model"]
-    if provider == "groq":
-        return _chat_groq_tools(messages, model, tools, options, timeout)
-    if provider == "ollama":
-        return _chat_ollama_tools(messages, model, cfg, tools, options, timeout)
-    raise LLMError(f"{provider} cannot take tools — pick Groq for Composio turns")
-
-
-def _chat_groq_tools(messages, model, tools, options, timeout) -> dict:
-    key = _api_key("groq")
-    if not key:
-        raise LLMError("no GROQ_API_KEY in max/.env")
-    body = {"model": model, "messages": messages, "tools": tools, "tool_choice": "auto"}
-    if options and options.get("num_predict"):
-        body["max_tokens"] = options["num_predict"]
-    headers = {"Authorization": f"Bearer {key}"}
-    with _post(GROQ_URL, body, headers, timeout) as response:
-        data = json.loads(response.read())
-    try:
-        msg = data["choices"][0]["message"]
-    except (KeyError, IndexError):
-        raise LLMError("no reply in the response")
-    return _normalize_tool_message(msg)
-
-
-def _chat_ollama_tools(messages, model, cfg, tools, options, timeout) -> dict:
-    try:
-        msg = ollama_client.chat_message(
-            messages,
-            model,
-            cfg["ollama_host"],
-            tools=tools,
-            options=options,
-            keep_alive=cfg.get("ollama_keep_alive"),
-            timeout=timeout,
-        )
-    except ollama_client.OllamaError as e:
-        raise LLMError(str(e)) from e
-    return _normalize_tool_message(msg)
-
-
-def _normalize_tool_message(msg: dict) -> dict:
-    calls = []
-    for i, tc in enumerate(msg.get("tool_calls") or []):
-        fn = tc.get("function") or tc
-        args = fn.get("arguments", {})
-        if isinstance(args, str):
-            try:
-                args = json.loads(args) if args else {}
-            except json.JSONDecodeError:
-                args = {}
-        calls.append(
-            {
-                "id": tc.get("id") or f"call_{i}",
-                "name": fn.get("name", ""),
-                "arguments": args if isinstance(args, dict) else {},
-            }
-        )
-    return {"content": (msg.get("content") or "").strip(), "tool_calls": calls}
-
-
 def chat(
     messages: list[dict],
     entry: dict,
@@ -338,6 +292,10 @@ def chat(
     """Send `messages` to the model in `entry`. Raises LLMError on failure."""
     provider = entry["provider"]
     model = entry["model"]
+    # Cloud with no network used to sit on the default 120s socket, so a
+    # spoken turn looked dead. Fail fast and let handle_ollama fall local.
+    if provider in ("groq", "gemini"):
+        timeout = min(int(timeout or 120), 8)
 
     if provider == "ollama":
         try:
@@ -361,8 +319,15 @@ def chat(
         except ollama_client.OllamaError as e:
             raise LLMError(str(e)) from e
 
-    if provider == "groq":
-        return _chat_groq(messages, model, options, stream_callback, timeout)
-    if provider == "gemini":
-        return _chat_gemini(messages, model, options, stream_callback, timeout)
+    # Reads of the response body happen outside _post (streaming especially,
+    # which stays inside the `with` for the whole generation), so the same
+    # bare-TimeoutError hole exists here too. Caught once around the
+    # dispatch rather than at four separate read sites.
+    try:
+        if provider == "groq":
+            return _chat_groq(messages, model, options, stream_callback, timeout)
+        if provider == "gemini":
+            return _chat_gemini(messages, model, options, stream_callback, timeout)
+    except TimeoutError as e:
+        raise LLMError(f"the API timed out ({e})") from e
     raise LLMError(f"unknown provider {provider!r}")

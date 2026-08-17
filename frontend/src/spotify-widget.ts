@@ -5,6 +5,8 @@
 // the server's ~2s updates so it doesn't visibly stall between them.
 import type { ServerMessage } from "./socket";
 
+import { paused } from "./idle";
+
 type SpotifyState = Extract<ServerMessage, { type: "spotify_state" }>;
 
 function formatTime(seconds: number): string {
@@ -67,6 +69,9 @@ export class SpotifyWidget {
   }
 
   private tick = (): void => {
+    // Re-arm before bailing: dropping the frame must not stop the
+    // loop, or it would never come back when the page is shown again.
+    if (paused()) return void requestAnimationFrame(this.tick);
     if (this.playing && !this.card.hidden) {
       const elapsed = (performance.now() - this.lastUpdateAt) / 1000;
       this.render(Math.min(this.duration, this.lastPosition + elapsed));

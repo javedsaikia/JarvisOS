@@ -183,12 +183,13 @@ socket.onMessage((msg: ServerMessage) => {
       ui.setModels(msg.models, msg.roles, msg.role_labels);
       break;
     }
-    case "memory_state": {
-      ui.setMemory(msg.facts || [], msg.style || []);
-      break;
-    }
     case "mic_state": {
       ui.setMicState(msg.muted);
+      break;
+    }
+    case "tts_volume": {
+      ui.setTtsVolume(msg.level);
+      audio.setVolume(msg.level);
       break;
     }
     case "mic_requested": {
@@ -255,6 +256,10 @@ ui.onWake = () => {
 ui.onScreenToggle = (enabled) => socket.setScreenFeed(enabled);
 ui.onModelChange = (role, model) => socket.setModel(role, model);
 ui.onMicToggle = (muted) => socket.setMic(muted);
+ui.onTtsVolume = (level) => {
+  audio.setVolume(level);
+  socket.setTtsVolume(level);
+};
 
 // Real elapsed session time since page load.
 const sessionStart = performance.now();

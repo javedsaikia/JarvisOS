@@ -27,10 +27,18 @@ DEFAULTS = {
          "label": "Local · Qwen 1.5B"},
         {"id": "local", "provider": "ollama", "model": "qwen2.5-coder:7b",
          "label": "Local · Qwen Coder 7B"},
-        {"id": "groq-8b", "provider": "groq", "model": "llama-3.1-8b-instant",
-         "label": "Groq · Llama 3.1 8B"},
-        {"id": "groq-70b", "provider": "groq", "model": "llama-3.3-70b-versatile",
-         "label": "Groq · Llama 3.3 70B"},
+        # Groq decommissioned both Llama models this catalog used to
+        # name. Measured live: every call returned "HTTP 404: The model
+        # `llama-3.3-70b-versatile` does not exist or you do not have
+        # access to it", so chat, voice AND screen were all silently
+        # falling back to the local model — one turn took 32s. These two
+        # are what the key can actually reach; check with
+        # GET https://api.groq.com/openai/v1/models if they ever go the
+        # same way.
+        {"id": "groq-20b", "provider": "groq", "model": "openai/gpt-oss-20b",
+         "label": "Groq · GPT-OSS 20B"},
+        {"id": "groq-120b", "provider": "groq", "model": "openai/gpt-oss-120b",
+         "label": "Groq · GPT-OSS 120B"},
         {"id": "gemini-flash", "provider": "gemini", "model": "gemini-2.0-flash",
          "label": "Gemini · 2.0 Flash"},
     ],
@@ -56,13 +64,57 @@ DEFAULTS = {
     "memory_reflect_min_seconds": 1200,
     "memory_reflect_max_turns": 60,
     "memory_reflect_max_tokens": 500,
+    # Longest thing Max will write for you in one go (max/compose.py) —
+    # an email, a prompt, a covering letter. Generous because a draft that
+    # stops mid-sentence is worse than a slightly slower one.
+    "compose_max_tokens": 700,
     "claude_code_enabled": True,
     "claude_code_command": "claude",
     "claude_code_confirm": True,
     "tools_confirm_writes": True,
     "tts_enabled": True,
+    # --- Which voice Max speaks in (max/speech.py)
+    #   "auto"   — a local macOS voice for English, Sarvam for Indian
+    #              languages. Local is faster and cannot fail: measured on
+    #              the same sentence, Rishi 0.88s against Sarvam's 2.35s,
+    #              with no network in the path at all.
+    #   "macos"  — always a locally installed voice (`say -v '?'` lists them)
+    #   "sarvam" — always Bulbul, for when its voice is worth the wait
+    "tts_engine": "auto",
+    # Which provider speaks ENGLISH. Sarvam is bypassed entirely on this
+    # path — it stays for Assamese, which is the only thing it is uniquely
+    # able to say.
+    #   "elevenlabs" — realtime-oriented cloud voice, needs
+    #                  ELEVENLABS_API_KEY in the environment or max/.env
+    #   "sarvam"     — Bulbul, using tts_voice
+    #   "macos"      — a locally installed voice, no network at all
+    "tts_provider_english": "elevenlabs",
+    # Where English goes when ElevenLabs cannot answer. "sarvam" (neural)
+    # or "macos" (local, but concatenative and robotic).
+    "tts_english_fallback": "sarvam",
+    # ElevenLabs voice ID — a voice from your own ElevenLabs library.
+    # `python3 -c "from max import elevenlabs_client as e;
+    # print(e.voices())"` lists what the key can reach.
+    "tts_voice_id": "Ix8C14HEHgIQkJswik2o",
+    # Flash is the low-latency line, which is the point of using
+    # ElevenLabs for a live voice; eleven_turbo_v2_5 trades speed for
+    # quality if that is ever the better bargain.
+    "elevenlabs_model": "eleven_flash_v2_5",
+    # English voice. A macOS voice name under "auto"/"macos" (Rishi, Tara
+    # and Aman are the Indian-English ones this Mac ships), or a Bulbul
+    # speaker name under "sarvam". See max/speech.py for the full list.
+    "tts_voice": "ritu",
+    # Assamese/Hindi voice. Always a Bulbul speaker — macOS has no Indian
+    # language voices installed, so this is not interchangeable with the
+    # English one above.
+    "tts_voice_indic": "ritu",
+    # Words per minute for the macOS voices. 180 is `say`'s default.
+    "tts_rate": 180,
     "tts_backend": "piper",
     "tts_voice_model": "max/voices/en_GB-alan-medium.onnx",
+    # Digital gain for spoken replies (afplay -v), 5–100. Separate from
+    # the Mac's output volume — Piper is loud on earphones at 100.
+    "tts_volume": 35,
     # How Max is woken.
     #   "phrase" — VAD + a small local Whisper spot whatever phrase you put
     #              in wake_phrases. No model to train, and nothing named
@@ -71,7 +123,7 @@ DEFAULTS = {
     #              CPU and it fires mid-phrase, but the pretrained set is
     #              hey_jarvis / alexa / hey_mycroft / hey_rhasspy only.
     "wake_mode": "phrase",
-    "wake_phrases": ["hey max"],
+    "wake_phrases": ["hey max", "max"],
     # Empty means "share voice_stt_model", which is the default and costs
     # nothing extra. Set a size (e.g. "tiny.en") to load a separate,
     # faster model for spotting — measured at 0.1s per utterance against
@@ -94,7 +146,7 @@ DEFAULTS = {
     # wake word, no VAD gate, no timeout, so it stays reliable over music
     # and room noise where the hands-free path is probabilistic.
     "push_to_talk_enabled": True,
-    "push_to_talk_combo": ["ctrl", "alt"],
+    "push_to_talk_combo": ["cmd", "alt"],
     # Tap a shortcut to wake Max, instead of holding one to talk (see
     # max/hotkey.py). Works from any app, so you never have to find the
     # window or say the phrase.
@@ -113,11 +165,9 @@ DEFAULTS = {
     "wake_hotkey_key": "cmd_r",
     "wake_hotkey_combo": ["ctrl", "alt", "space"],
     "voice_silence_rms_threshold": 300,
-    # Was 180 — seen live, a window that long meant any speech near the
-    # mic (e.g. dictating a message to something else entirely) got picked
-    # up as a Max follow-up command for minutes after the last real
-    # exchange, with no wake word required to re-arm it.
-    "voice_conversation_window_seconds": 45,
+    # 0 = every spoken command must start with the wake phrase. A leftover
+    # open window used to answer anything said near the mic after a turn.
+    "voice_conversation_window_seconds": 0,
     # Master switch for everything that looks at the screen — "what's on
     # my screen?", and the live screen card below. False disables the lot.
     "vision_enabled": True,
@@ -162,6 +212,7 @@ DEFAULTS = {
     # Outgoing restaurant calls are never placed as this number.
     "user_phone": "",
     "news_enabled": True,
+    "omdb_enabled": True,
     "spotify_max_volume": 75,
     # Stable Composio user id — connections are stored against this.
     # Overwritten at runtime with the user id that already owns

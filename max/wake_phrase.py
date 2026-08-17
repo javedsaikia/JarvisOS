@@ -51,7 +51,7 @@ SEGMENT_SILENCE_SECONDS = 0.35
 # Speech shorter than this is a cough or a chair; longer than this is a
 # conversation that was never addressed to us, and transcribing all of it
 # on every pass would be the one genuinely expensive thing this could do.
-MIN_SEGMENT_SECONDS = 0.35
+MIN_SEGMENT_SECONDS = 0.25
 MAX_SEGMENT_SECONDS = 8.0
 
 VAD_SPEECH_THRESHOLD = 0.5
@@ -80,6 +80,7 @@ NAME_MISHEARINGS = {
     "max": [
         "macs", "mack", "mac", "maxx", "maxe", "maxie", "macks",
         "marks", "marx", "maps", "mas", "mak", "mex", "mix",
+        "makes", "maxs", "maax",
     ],
 }
 
@@ -88,6 +89,25 @@ NAME_MISHEARINGS = {
 # enough to survive an unfamiliar name, tight enough that ordinary speech
 # after "hey" doesn't wake anything.
 NAME_SIMILARITY = 0.72
+
+_ADDRESS_EN = re.compile(
+    r"(?i)\b(?:(?:hey|hi|hello|ok|okay)[,!.]?\s*)?max\b[!,.]?"
+)
+_ADDRESS_AS = re.compile(
+    r"(?:হে(?:ই)?\s*)?(?:ম্যাক্স|মেক্স|মাক্স|ম্য়াক্স|এক্স)[!,.।]?"
+)
+
+
+def strip_address_name(text: str) -> str:
+    """Drop vocative Max from what we show and log.
+
+    Saying the name only addresses the assistant. It must not appear in
+    the HUD transcript as if it were part of the request.
+    """
+    t = text or ""
+    t = _ADDRESS_EN.sub(" ", t)
+    t = _ADDRESS_AS.sub(" ", t)
+    return re.sub(r"\s+", " ", t).strip(" ,.-")
 
 
 def _normalize(text: str) -> str:
@@ -179,7 +199,10 @@ class PhraseWake:
         self._in_speech = False
 
     def describe(self) -> str:
-        return self.phrases[0] if self.phrases else "(none)"
+        if not self.phrases:
+            return "(none)"
+        pretty = [" ".join(w.capitalize() for w in p.split()) for p in self.phrases]
+        return " or ".join(pretty)
 
     def _is_name(self, token: str, loose: bool) -> bool:
         if not token:
@@ -196,8 +219,7 @@ class PhraseWake:
         nobody has ever seen before. A mishearing that gets through the
         matcher must not survive into the prompt: seen live, "Max, I am
         really depressed" arrived as "Kiren, ..." and the model reasonably
-        started calling the user Kiren."""
-        """Is the name at position `i`, as one token or split across two?
+        started calling the user Kiren.
 
         Whisper sometimes writes an unfamiliar name as two real words —
         measured: "Max, check my calendar" came back as "or in check my
@@ -259,13 +281,23 @@ class PhraseWake:
         tokens = _normalize(transcript).split()
         if not tokens:
             return False
+        # Bare name first: "Max, what's the weather" / "Max."
+        # Strict match, then the curated mishearings (mac/mack/maps).
+        # Fuzzy-on-loose stays reserved for "hey <name>" so "mix the
+        # batter" does not wake us.
         if self._name_at(tokens, 0, loose=False):
             return True
-        # Multi-word phrase spelled out in config ("computer, wake up") is
-        # still matched literally, so a phrase that isn't name-shaped works.
-        text = " ".join(tokens)
-        if any(_normalize(p).strip() in text for p in self.phrases):
+        if tokens[0] in self.loose_names:
+            self.last_match_token = tokens[0]
             return True
+        # Multi-word phrase spelled out in config ("computer, wake up") is
+        # still matched as whole words. A raw substring would wake on
+        # "maximum" because it contains "max".
+        text = " ".join(tokens)
+        for phrase in self.phrases:
+            needle = _normalize(phrase).strip()
+            if needle and re.search(rf"\b{re.escape(needle)}\b", text):
+                return True
         for i, token in enumerate(tokens[:-1]):
             if token in LEAD_WORDS and self._name_at(tokens, i + 1):
                 return True
@@ -357,4 +389,19 @@ class PhraseWake:
         """The triggering utterance, once. Cleared on read so a later turn
         can't accidentally replay an old command."""
         audio, self.pending_audio = self.pending_audio, None
+        return audio
+
+    def take_open_segment(self) -> np.ndarray | None:
+        """Speech already fed into the detector but not yet ended.
+
+        Push-to-talk used to fire, then record_while_held drained the
+        mic queue, while these frames sat inside the detector and were
+        thrown away. The user had already said the command.
+        """
+        if not self._segment:
+            return None
+        audio = np.concatenate(self._segment)
+        self._segment = []
+        self._in_speech = False
+        self._silence_chunks = 0
         return audio

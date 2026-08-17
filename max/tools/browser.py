@@ -50,7 +50,6 @@ def _get_page():
 
 
 def _shutdown() -> None:
-    global _playwright, _context
     try:
         if _context:
             _context.close()

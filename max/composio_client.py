@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from max import env, llm
@@ -23,7 +24,20 @@ SESSION_PATH = Path(__file__).parent / ".composio_session.json"
 DEFAULT_USER_ID = "max"
 
 # Toolkits we will attach when they have an ACTIVE connected account.
-KNOWN_TOOLKITS = ("gmail", "github", "youtube", "googledrive", "cal")
+# Only these are used. Expired / failed / dummy-key accounts stay off
+# the session even if they still appear in the Composio project.
+KNOWN_TOOLKITS = (
+    "gmail", "github", "youtube", "googledrive", "cal",
+    "openweather_api", "weathermap", "google_maps", "chatfai",
+    # Connected later. A toolkit that is not attached here is invisible to
+    # the session — its tools cannot even be searched for, let alone run —
+    # so an account being ACTIVE in Composio is necessary but not enough.
+    "googlecalendar", "googletasks", "linkedin", "reddit",
+)
+# No connected account required — Composio serves these itself.
+NO_AUTH_TOOLKITS = ("weathermap",)
+# Do not attach, even if Composio lists them.
+BLOCKED_TOOLKITS = ("tripadvisor", "microsoft_teams")
 
 
 class ComposioError(Exception):
@@ -110,7 +124,11 @@ def get_session(cfg: dict | None = None):
     """Create or reuse a session bound to the authorized accounts."""
     uid = user_id(cfg)
     accounts = active_accounts()
-    toolkits = [t for t in KNOWN_TOOLKITS if t in accounts]
+    toolkits = [
+        t for t in KNOWN_TOOLKITS
+        if t not in BLOCKED_TOOLKITS
+        and (t in accounts or t in NO_AUTH_TOOLKITS)
+    ]
     fingerprint = {"user_id": uid, "toolkits": toolkits, "accounts": accounts}
 
     composio = _client()
@@ -119,6 +137,7 @@ def get_session(cfg: dict | None = None):
         existing.get("session_id")
         and existing.get("user_id") == uid
         and existing.get("accounts") == accounts
+        and existing.get("toolkits") == toolkits
     ):
         try:
             return composio.use(existing["session_id"])
@@ -132,7 +151,9 @@ def get_session(cfg: dict | None = None):
     }
     if toolkits:
         kwargs["toolkits"] = toolkits
-        kwargs["connected_accounts"] = {t: accounts[t] for t in toolkits}
+        connected = {t: accounts[t] for t in toolkits if t in accounts}
+        if connected:
+            kwargs["connected_accounts"] = connected
     session = composio.create(**kwargs)
     _save_session_record({**fingerprint, "session_id": session.session_id})
     return session
@@ -140,28 +161,6 @@ def get_session(cfg: dict | None = None):
 
 def tools(cfg: dict | None = None):
     return get_session(cfg).tools()
-
-
-def _tools_as_dicts(raw) -> list[dict]:
-    out = []
-    for item in raw or []:
-        if isinstance(item, dict):
-            d = item
-        elif hasattr(item, "model_dump"):
-            d = item.model_dump()
-        else:
-            try:
-                d = dict(item)
-            except Exception:
-                continue
-        # Groq rejects function.strict: null (OpenAI providers emit it).
-        fn = d.get("function")
-        if isinstance(fn, dict) and fn.get("strict") is None:
-            fn = dict(fn)
-            fn.pop("strict", None)
-            d = {**d, "function": fn}
-        out.append(d)
-    return out
 
 
 def _result_text(result) -> str:
@@ -185,13 +184,277 @@ def _result_text(result) -> str:
         return str(data)[:8000]
 
 
+def fetch_inbox(max_results: int = 5) -> list[dict]:
+    """Recent inbox rows. Deterministic — no model, so it cannot invent."""
+    session = get_session()
+    try:
+        result = session.execute("GMAIL_FETCH_EMAILS", arguments={"max_results": max_results})
+    except Exception as e:
+        raise ComposioError(f"GMAIL_FETCH_EMAILS failed: {e}") from e
+    if getattr(result, "error", None):
+        raise ComposioError(str(result.error))
+    data = getattr(result, "data", None)
+    if hasattr(data, "model_dump"):
+        data = data.model_dump()
+    if not isinstance(data, dict):
+        return []
+    inner = data.get("data") if isinstance(data.get("data"), dict) else data
+    rows = []
+    for m in (inner.get("messages") or [])[:max_results]:
+        if not isinstance(m, dict):
+            continue
+        rows.append({
+            # sender is kept because email_compose.resolve_name matches a
+            # spoken name against it ("reply to Zapier"), but it is
+            # deliberately NOT spoken — see inbox_speech.
+            "sender": (m.get("sender") or m.get("from") or "unknown").strip(),
+            "subject": (m.get("subject") or "(no subject)").strip(),
+            "body": clean_body(m.get("messageText") or ""),
+            "id": m.get("messageId") or m.get("id") or "",
+            "thread_id": m.get("threadId") or m.get("thread_id") or "",
+        })
+    return rows
+
+
+# Marketing mail is mostly navigation furniture and tracking links. None of
+# it survives to the model, so a summary can't be built out of "View this
+# email in your browser".
+_URL_RE = re.compile(r"https?://\S+|\bwww\.\S+")
+_INVISIBLE_RE = re.compile(r"[​-‏⁠﻿\xad]")
+_BOILERPLATE_RE = re.compile(
+    r"(?im)^\s*(?:view (?:this|it) (?:email )?in (?:your )?browser|"
+    r"click here to (?:see|view) the web version|click here to unsubscribe|"
+    r"to view this email|having trouble viewing|add us to your address book|"
+    r"[-=_*]{6,}|"
+    r"unsubscribe|manage preferences|privacy policy|terms of use|"
+    r"if you (?:no longer|do not) wish to receive|sent to you because|"
+    r"copyright \S+|all rights reserved).*$"
+)
+_BODY_CHARS = 700
+
+
+def clean_body(text: str) -> str:
+    """Readable prose from a raw email body, capped for prompt cost."""
+    t = _INVISIBLE_RE.sub("", text or "")
+    t = _URL_RE.sub(" ", t)
+    t = _BOILERPLATE_RE.sub(" ", t)
+    t = re.sub(r"[ \t\r ]+", " ", t)
+    t = re.sub(r"\n\s*\n+", "\n", t)
+    return t.strip()[:_BODY_CHARS]
+
+
+# Marketing subjects are full of emoji, flags and decorative bars. Bulbul
+# either spells them out or stalls on them; either way they are noise in
+# something being read aloud.
+_UNSPEAKABLE_RE = re.compile(
+    "[\U0001F000-\U0001FAFF←-⯿☀-➿️‍|]+"
+)
+
+
+def _speakable(text: str) -> str:
+    return re.sub(r"\s{2,}", " ", _UNSPEAKABLE_RE.sub(" ", text or "")).strip(" -–—:")
+
+
+_ORDINALS = ("First", "Second", "Third", "Fourth", "Fifth")
+_COUNT_WORDS = {1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five"}
+
+
+def inbox_speech(rows: list[dict]) -> str:
+    """Subject line, then what the email is about. Spoken, so: no senders,
+    no addresses, no numbering punctuation.
+
+    The sender used to lead every item, which meant a spoken inbox was a
+    minute of "HDFC MF, angle noresponse at hdfcfund dot com" before
+    reaching anything the user actually wanted — and the raw address is
+    both the slowest thing Bulbul has to say (measured: 104 chars of
+    address-heavy text took 8.4s to synthesize, against 3.2s for 63 chars
+    of prose) and the least useful. Who sent it is on screen; what it says
+    is what you asked for.
+    """
+    if not rows:
+        return "The inbox is empty."
+    shown = rows[:5]
+    bits = []
+    for i, row in enumerate(shown):
+        subject = _speakable(row.get("subject") or "") or "no subject"
+        summary = _speakable(row.get("summary") or "").rstrip(".")
+        # Subjects routinely end in "?" or "!" already; appending a full
+        # stop regardless produced "Want more referrals?." out loud.
+        bit = f"{_ORDINALS[i]}, {subject}" + ("" if subject[-1:] in ".?!" else ".")
+        if summary:
+            bit += f" {summary[0].upper()}{summary[1:]}."
+        bits.append(bit)
+    count = _COUNT_WORDS.get(len(shown), str(len(shown)))
+    head = "One email." if len(shown) == 1 else f"{count} emails."
+    return head + " " + " ".join(bits)
+
+
+def create_reminder(subject: str, when, has_time: bool) -> str:
+    """Put a reminder in Google Calendar (timed) or Google Tasks (dated).
+
+    Slugs verified against the live session. Raises rather than returning
+    a cheerful string on failure — the caller speaks the failure, and this
+    is exactly the path where a made-up success does the most damage.
+    """
+    if not (subject or "").strip():
+        raise ComposioError("A reminder needs something to be about.")
+    session = get_session()
+    if has_time:
+        args = {
+            "calendarId": "primary",
+            "summary": subject,
+            "start_datetime": when.strftime("%Y-%m-%dT%H:%M:%S"),
+            "event_duration_hour": 0,
+            "event_duration_minutes": 30,
+            "timezone": _local_timezone(),
+        }
+        result = _execute(session, "GOOGLECALENDAR_CREATE_EVENT", args)
+        return f"calendar:{result}"
+    args = {
+        "tasklist_id": _default_tasklist(session),
+        "title": subject,
+        "due": when.strftime("%Y-%m-%dT00:00:00.000Z"),
+    }
+    result = _execute(session, "GOOGLETASKS_INSERT_TASK", args)
+    return f"tasks:{result}"
+
+
+def _local_timezone() -> str:
+    """This Mac's IANA zone name, e.g. "Asia/Kolkata".
+
+    Not the abbreviation: Google rejects "IST" outright ("Timezone
+    abbreviations like 'EST', 'PST', 'IST' are not valid IANA
+    identifiers"), and %Z is all datetime offers on macOS. The symlink
+    /etc/localtime points at the zoneinfo file, whose path IS the name.
+    """
+    tz = os.environ.get("TZ", "").strip()
+    if "/" in tz:
+        return tz
+    try:
+        target = os.path.realpath("/etc/localtime")
+        parts = target.split("/zoneinfo/", 1)
+        if len(parts) == 2 and parts[1]:
+            return parts[1]
+    except OSError:
+        pass
+    return "UTC"
+
+
+def _default_tasklist(session) -> str:
+    result = session.execute("GOOGLETASKS_LIST_TASK_LISTS", arguments={"maxResults": 5})
+    data = getattr(result, "data", None)
+    if hasattr(data, "model_dump"):
+        data = data.model_dump()
+    items = (data or {}).get("items") or []
+    for item in items:
+        if isinstance(item, dict) and item.get("id"):
+            return item["id"]
+    raise ComposioError("No Google Tasks list to add to.")
+
+
+def _execute(session, slug: str, args: dict) -> str:
+    try:
+        result = session.execute(slug, arguments=args)
+    except Exception as e:
+        raise ComposioError(f"{slug} failed: {e}") from e
+    err = getattr(result, "error", None)
+    if err:
+        raise ComposioError(str(err))
+    return slug
+
+
+def search_person(name: str) -> list[str]:
+    """Contact emails for a spoken name. Empty if none."""
+    q = (name or "").strip()
+    if not q:
+        return []
+    session = get_session()
+    try:
+        result = session.execute("GMAIL_SEARCH_PEOPLE", arguments={"query": q})
+    except Exception as e:
+        print(f"[composio] people search failed: {e}", flush=True)
+        return []
+    if getattr(result, "error", None):
+        return []
+    data = getattr(result, "data", None)
+    if hasattr(data, "model_dump"):
+        data = data.model_dump()
+    if not isinstance(data, dict):
+        return []
+    emails: list[str] = []
+    for item in data.get("results") or []:
+        person = (item or {}).get("person") or item or {}
+        for entry in person.get("emailAddresses") or []:
+            value = (entry.get("value") or "").strip()
+            if value and value.lower() not in {e.lower() for e in emails}:
+                emails.append(value)
+    return emails
+
+
+def create_email_draft(to: list[str], subject: str, body: str) -> dict:
+    """GMAIL_CREATE_EMAIL_DRAFT — Composio skill for 'draft an email'."""
+    if not to:
+        raise ComposioError("I need an email address to draft to.")
+    session = get_session()
+    try:
+        result = session.execute(
+            "GMAIL_CREATE_EMAIL_DRAFT",
+            arguments={
+                "recipient_email": to[0],
+                "subject": subject or "",
+                "body": body or "",
+            },
+        )
+    except Exception as e:
+        raise ComposioError(f"GMAIL_CREATE_EMAIL_DRAFT failed: {e}") from e
+    if getattr(result, "error", None):
+        raise ComposioError(str(result.error))
+    data = getattr(result, "data", None)
+    if hasattr(data, "model_dump"):
+        data = data.model_dump()
+    if not isinstance(data, dict):
+        return {"id": "", "url": ""}
+    return {
+        "id": data.get("id") or "",
+        "url": data.get("display_url") or "",
+    }
+
+
+def send_gmail_draft(draft_id: str) -> None:
+    session = get_session()
+    try:
+        result = session.execute("GMAIL_SEND_DRAFT", arguments={"draft_id": draft_id})
+    except Exception as e:
+        raise ComposioError(f"GMAIL_SEND_DRAFT failed: {e}") from e
+    if getattr(result, "error", None):
+        raise ComposioError(str(result.error))
+
+
 READ_TOOLS = {
     "email": ("GMAIL_FETCH_EMAILS", {"max_results": 5}),
     "github": ("GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER", {"per_page": 8, "sort": "updated"}),
     "youtube": ("YOUTUBE_LIST_CHANNELS", {}),
     "googledrive": ("GOOGLEDRIVE_LIST_FILES", {"pageSize": 8}),
     "cal": ("CAL_FETCH_ALL_BOOKINGS", {}),
+    # Slugs and arguments verified against the live session, not guessed —
+    # Composio's own COMPOSIO_SEARCH_TOOLS only lists tools for toolkits
+    # already attached in KNOWN_TOOLKITS, so an invented slug fails at the
+    # worst moment rather than at wiring time.
+    "googlecalendar": ("GOOGLECALENDAR_EVENTS_LIST",
+                       {"calendarId": "primary", "maxResults": 8,
+                        "singleEvents": True, "orderBy": "startTime"}),
+    "googletasks": ("GOOGLETASKS_LIST_TASK_LISTS", {"maxResults": 8}),
+    "linkedin": ("LINKEDIN_GET_MY_INFO", {}),
+    # Reddit needs a subreddit; run() overrides this with whichever one
+    # they named, and falls back to this when they just say "reddit".
+    "reddit": ("REDDIT_GET_R_TOP", {"subreddit": "technology", "limit": 6, "t": "day"}),
 }
+
+# Which subreddit "what's on reddit about X" means.
+_SUBREDDIT_RE = re.compile(
+    r"\b(?:r/|subreddit\s+|reddit\s+(?:about|on|for)\s+)([A-Za-z][A-Za-z0-9_]{2,20})\b",
+    re.IGNORECASE,
+)
 
 
 def execute_and_say(user_text: str, cfg: dict, tool_slug: str, arguments: dict | None = None) -> str:
@@ -216,8 +479,17 @@ def execute_and_say(user_text: str, cfg: dict, tool_slug: str, arguments: dict |
     ]
     try:
         return llm.chat(messages, entry, cfg, options={"num_predict": 100})
-    except llm.LLMError:
-        return fallback_speech
+    except llm.LLMError as e:
+        # The assigned model is unreachable — measured live when Groq
+        # decommissioned the configured Llama models and every call came
+        # back 404. Try the local one before falling back to a canned
+        # line: a real summary from a slower model beats no summary.
+        print(f"[composio] {entry['label']} failed ({e}) — local model", flush=True)
+        try:
+            local = llm.resolve({**cfg, "model_roles": {}}, "chat")
+            return llm.chat(messages, local, cfg, options={"num_predict": 100})
+        except llm.LLMError:
+            return fallback_speech
 
 
 def _plain_summary(tool_slug: str, result) -> str:
@@ -234,16 +506,85 @@ def _plain_summary(tool_slug: str, result) -> str:
         if not lines:
             return "The inbox is empty."
         return "Latest emails. " + " ".join(f"{i}. {line}." for i, line in enumerate(lines, 1))
-    if "messages" not in inner:
-        return f"{tool_slug} returned. " + _result_text(result)[:400]
-    return _result_text(result)[:500]
+    # Never the raw payload, and never the tool slug. This line is SPOKEN
+    # and it is LOGGED, and both did real damage: Max read 58 seconds of
+    # Reddit JSON aloud, and the logged "REDDIT_GET_R_TOP returned. {...}"
+    # then taught the chat model the format — it went on to invent
+    # "LINKEDIN_CHECK_POSTS" and "TRIP_ADVISOR_SEARCH" complete with
+    # fabricated posts and hotel ratings. A summariser outage must degrade
+    # to saying less, never to dumping the payload.
+    items = _count_items(inner)
+    what = _friendly_name(tool_slug)
+    if items:
+        return f"I got {items} back from {what}, but couldn't summarize them just now."
+    return f"{what} answered, but I couldn't put it into words just now."
+
+
+def _count_items(inner: dict) -> str:
+    """"3 items" for whatever list-shaped thing came back, else ""."""
+    if not isinstance(inner, dict):
+        return ""
+    for key in ("items", "messages", "children", "results", "places", "events", "posts"):
+        value = inner.get(key)
+        if isinstance(value, list) and value:
+            return f"{len(value)} item{'s' if len(value) != 1 else ''}"
+    nested = inner.get("data")
+    if isinstance(nested, dict):
+        return _count_items(nested)
+    return ""
+
+
+# Toolkit slug -> what a person calls it. Never expose the slug itself.
+_FRIENDLY = {
+    "GMAIL": "Gmail", "GITHUB": "GitHub", "YOUTUBE": "YouTube",
+    "GOOGLEDRIVE": "Google Drive", "GOOGLECALENDAR": "Google Calendar",
+    "GOOGLETASKS": "Google Tasks", "LINKEDIN": "LinkedIn",
+    "REDDIT": "Reddit", "CAL": "Cal.com", "CHATFAI": "ChatFAI",
+    "GOOGLE": "Google Maps",
+}
+
+
+def _friendly_name(tool_slug: str) -> str:
+    head = (tool_slug or "").split("_", 1)[0].upper()
+    return _FRIENDLY.get(head, "that service")
 
 
 def run(user_text: str, cfg: dict, domain: str = "email", action: str = "read") -> str:
+    if domain == "chatfai":
+        # NB: no local `import re` here. It used to be, and because Python
+        # scopes a name for the whole function, it made `re` local to
+        # run() — so every other branch that used the module-level `re`
+        # died with UnboundLocalError the moment it was reached.
+        q = re.sub(r"\bchat\s*fai\b", " ", user_text or "", flags=re.I)
+        q = re.sub(r"\b(search|find|look up|lookup|on|for|about)\b", " ", q, flags=re.I)
+        q = re.sub(r"\s+", " ", q).strip(" .?!")
+        if len(q) < 2:
+            q = "Sherlock Holmes"
+        return execute_and_say(user_text, cfg, "CHATFAI_SEARCH_CHARACTERS", {"q": q})
+
     if action != "write":
         if domain not in READ_TOOLS:
             raise ComposioError(f"No Composio read path for {domain}.")
         slug, args = READ_TOOLS[domain]
+        if domain == "reddit":
+            named = _SUBREDDIT_RE.search(user_text or "")
+            if named:
+                args = {**args, "subreddit": named.group(1)}
+        if domain == "googlecalendar":
+            # Without timeMin the API lists from the beginning of the
+            # calendar — measured, it read back an electricity bill from
+            # 2013 and an insurance premium from 2015 as "your events".
+            # "What's on my calendar" always means from now on.
+            import datetime as _dt
+            now = _dt.datetime.now(_dt.timezone.utc)
+            args = {**args, "timeMin": now.isoformat().replace("+00:00", "Z")}
+            if re.search(r"\b(week|next few days|coming days)\b", user_text or "", re.I):
+                horizon = now + _dt.timedelta(days=7)
+            elif re.search(r"\btomorrow\b", user_text or "", re.I):
+                horizon = now + _dt.timedelta(days=2)
+            else:
+                horizon = now + _dt.timedelta(days=1)
+            args["timeMax"] = horizon.isoformat().replace("+00:00", "Z")
         return execute_and_say(user_text, cfg, slug, args)
 
     if domain != "email":
@@ -276,88 +617,16 @@ def run(user_text: str, cfg: dict, domain: str = "email", action: str = "read") 
         to = [to]
     if not to:
         raise ComposioError("I need an email address to send to.")
-    return execute_and_say(
-        user_text,
-        cfg,
-        "GMAIL_SEND_EMAIL",
-        {"to": to, "subject": payload.get("subject") or "", "body": payload.get("body") or ""},
+    draft = create_email_draft(
+        to,
+        payload.get("subject") or "",
+        payload.get("body") or "",
+    )
+    return (
+        f"Draft saved in Gmail for {', '.join(to)}"
+        + (f', subject "{payload.get("subject")}"' if payload.get("subject") else "")
+        + ". It is not sent. Say send it if that's right."
+        + (f" {draft['url']}" if draft.get("url") else "")
     )
 
 
-def complete(user_text: str, cfg: dict, *, max_steps: int = 8) -> str:
-    """Run one request through the session tools and the assigned chat model."""
-    session = get_session(cfg)
-    wrapped = _tools_as_dicts(session.tools())
-    if not wrapped:
-        raise ComposioError("Composio session returned no tools.")
-
-    connected = ", ".join(sorted(active_accounts()) or ["none"])
-    system = (
-        "You are Max. Use the Composio tools to complete the user's request. "
-        f"Already connected: {connected}. Do not ask them to authorize those. "
-        "If a tool errors, say so plainly. Ask before creating, updating, or deleting. "
-        "Answer in one or two spoken sentences, no markdown. No lectures."
-    )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_text},
-    ]
-    entry = llm.resolve(cfg, "chat")
-
-    for _ in range(max_steps):
-        try:
-            turn = llm.chat_tools(messages, entry, cfg, tools=wrapped)
-        except llm.LLMError as e:
-            # Tool schemas are large; the 70B chat role regularly hits Groq's
-            # TPM cap. The 8B voice model is the same provider and fits.
-            if "429" in str(e) and entry.get("id") != "groq-8b":
-                fallback = next(
-                    (m for m in llm.catalog(cfg) if m["id"] == "groq-8b" and m["available"]),
-                    None,
-                )
-                if fallback:
-                    entry = fallback
-                    turn = llm.chat_tools(messages, entry, cfg, tools=wrapped)
-                else:
-                    raise
-            else:
-                raise
-        calls = turn.get("tool_calls") or []
-        content = (turn.get("content") or "").strip()
-        if not calls:
-            if content:
-                return content
-            raise ComposioError("The model returned no answer and called no tool.")
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": content or None,
-                "tool_calls": [
-                    {
-                        "id": c["id"],
-                        "type": "function",
-                        "function": {
-                            "name": c["name"],
-                            "arguments": json.dumps(c["arguments"]),
-                        },
-                    }
-                    for c in calls
-                ],
-            }
-        )
-        for call in calls:
-            try:
-                result = session.execute(call["name"], arguments=call["arguments"] or {})
-                payload = _result_text(result)
-            except Exception as e:
-                payload = json.dumps({"error": str(e), "successful": False})
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": payload,
-                }
-            )
-
-    raise ComposioError("Composio tool loop ran too long without a final answer.")

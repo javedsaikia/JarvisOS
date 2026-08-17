@@ -2,14 +2,14 @@
 # Start Max (bridge + voice loop).
 #
 # Run this from YOUR OWN Terminal. macOS grants Input Monitoring — which
-# push-to-talk needs to see the Control+Option keypress — to the
-# "responsible" app that started the process. A Max launched by some
-# other tool inherits that tool's permissions instead of your Terminal's,
-# and push-to-talk then silently receives nothing.
+# Command+Option push-to-talk needs — to the "responsible" app that
+# started the process. Voice must be a child of Terminal, not of the
+# login-agent bridge, or the keys arrive as silence.
 #
 #   ./start_max.sh          start voice (and the bridge if it is not up)
 #   ./start_max.sh stop     stop the voice loop
 #   ./start_max.sh log      follow the voice log
+#   ./start_max.sh status   what's already running — no rebuild, no restart
 #
 # The HUD is local Caddy at http://max.localhost:2015 — see Caddyfile and
 # deploy/install_local.sh. Voice still starts from Terminal so macOS
@@ -35,6 +35,14 @@ case "${1:-start}" in
   log)
     exec tail -f "$VOICE_LOG"
     ;;
+  status)
+    echo "HUD:    $(lsof -iTCP:2015 -sTCP:LISTEN >/dev/null 2>&1 && echo up || echo down)  http://max.localhost:2015"
+    echo "Bridge: $(lsof -iTCP:8765 -sTCP:LISTEN >/dev/null 2>&1 && echo up || echo down)  ws://127.0.0.1:8765"
+    echo "Voice:  $(pgrep -f 'max.voice_loop' >/dev/null 2>&1 && echo up || echo down)"
+    echo "Agents: $(launchctl print "gui/$(id -u)/com.max.bridge" >/dev/null 2>&1 && echo installed || echo missing)"
+    echo "HUD build: $([ -f frontend/dist/index.html ] && echo ready || echo missing — run deploy/install_local.sh --rebuild)"
+    exit 0
+    ;;
 esac
 
 echo "Stopping any running voice loop..."
@@ -49,35 +57,16 @@ else
     echo "Bridge already listening on 8765."
 fi
 
-echo "Starting voice loop..."
-"$PY" - <<'PYEOF'
-import asyncio, json, sys
-try:
-    import websockets
-except ImportError:
-    sys.exit("websockets not installed in the venv")
-
-async def main():
-    try:
-        async with websockets.connect("ws://127.0.0.1:8765", open_timeout=8) as ws:
-            await asyncio.wait_for(ws.recv(), timeout=3)
-            try:
-                await asyncio.wait_for(ws.recv(), timeout=2)
-            except asyncio.TimeoutError:
-                pass
-            await ws.send(json.dumps({"type": "voice_start"}))
-            print("  ", await asyncio.wait_for(ws.recv(), timeout=10))
-    except Exception as e:
-        sys.exit(f"could not reach the bridge: {e}")
-
-asyncio.run(main())
-PYEOF
+echo "Starting voice loop from this Terminal (so hotkeys can see the keyboard)..."
+# Child of this shell — not of the launchd bridge — so Input Monitoring
+# attaches to Terminal. nohup only ignores hangup; it does not reparent.
+nohup "$PY" -u -m max.voice_loop >> "$VOICE_LOG" 2>&1 &
 
 echo "Waiting for the voice loop to come up (models load on first start)..."
 online=0
 seen_proc=0
 for _ in $(seq 1 90); do
-    if grep -q "voice loop online" "$VOICE_LOG" 2>/dev/null; then
+    if grep -qE "voice loop online|Microphone OFF" "$VOICE_LOG" 2>/dev/null; then
         online=1
         break
     fi

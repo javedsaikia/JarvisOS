@@ -6,6 +6,7 @@ cli.handle_spotify's local now-playing read, since that reads this Mac's
 active session across ALL devices (phone, speaker, etc.), while
 AppleScript's `current track` only ever reflects this Mac's local app.
 """
+import re
 import subprocess
 import time
 
@@ -18,6 +19,33 @@ from max.config import load_config
 # creates no persistent Spotify object of its own — matches the rest of
 # this module's stateless-function style otherwise.
 _volume_before_mute: int | None = None
+
+
+def _state_and_track() -> tuple[str, str]:
+    """(player state, "Title by Artist") in ONE osascript call.
+
+    The play-confirmation loop used to ask for these separately, and each
+    osascript spawn costs ~0.2s — two per poll plus the sleep made a
+    single "play X" take 13-14 seconds end to end. One call halves the
+    per-poll cost and the loop usually exits in two or three iterations.
+    """
+    script = """
+tell application "Spotify"
+    set playState to player state as text
+    try
+        set trackLine to (name of current track) & " by " & (artist of current track)
+    on error
+        set trackLine to ""
+    end try
+    return playState & "|" & trackLine
+end tell
+"""
+    try:
+        raw = run(script, app_name="Spotify")
+    except Exception:
+        return "", ""
+    state, _, track = raw.partition("|")
+    return state.strip(), track.strip()
 
 
 def _player_state() -> str:
@@ -54,7 +82,7 @@ def play() -> str:
     # a generic Spotify command should just open the app and wait for an
     # actual song name (play_track), not start playing something random.
     subprocess.run(["open", "-a", "Spotify"], capture_output=True, timeout=10)
-    return "Spotify's open — tell me what song to play."
+    return "Spotify's open. What do you want on?"
 
 
 def open_app() -> str:
@@ -70,7 +98,7 @@ def open_app() -> str:
     line = _now_playing_line()
     if line and _player_state() == "paused":
         return f"Spotify's open — {line} is paused. Tell me what to play."
-    return "Spotify's open — tell me what song to play."
+    return "Spotify's open. What do you want on?"
 
 
 # Last real search string the user asked for. "play it" / a spoken "yes"
@@ -111,7 +139,7 @@ def play_track(query: str) -> str:
     if not q and _last_query:
         q = _last_query
     if not q:
-        return "Tell me the song name and I'll play it."
+        return "What do you want me to play?"
 
     remember_query(q)
     try:
@@ -121,25 +149,47 @@ def play_track(query: str) -> str:
     if not match:
         return f'Couldn\'t find "{q}" on Spotify.'
 
+    before = _now_playing_line()
     _apply_volume_cap()
     subprocess.run(["open", match["uri"]], capture_output=True, timeout=10)
+
+    # Wait for the track to CHANGE, not merely for the player to be
+    # playing. It was already playing the previous song, so the old check
+    # broke on the first poll and read the outgoing track — which is how
+    # asking for Metallica answered "Spotify is playing High Hopes by Pink
+    # Floyd, not Nothing Else Matters. Say the title again and I'll retry."
+    # Nothing was wrong except the timing of the read.
+    wanted_name = (match.get("name") or "").lower()
     actual = ""
-    for _ in range(8):
-        time.sleep(1)
-        if _player_state() == "playing":
-            actual = _now_playing_line()
+    # Capped at about two seconds. Spotify's own switch latency is
+    # variable — measured between 2.4s and over 5s for the same action —
+    # and waiting it out made "play X" take 8-10 seconds end to end. On
+    # timeout the reply names the track that was ASKED for, which is the
+    # exact URI just opened and therefore what comes on. Confirming it a
+    # beat early is a far smaller cost than the silence was.
+    for _ in range(6):
+        time.sleep(0.2)
+        state, line = _state_and_track()
+        if state != "playing" or not line:
+            continue
+        lowered = line.lower()
+        # The TITLE, never the artist alone. Matching on artist reported
+        # the outgoing track whenever the next one was by the same
+        # musician: asking for "Wish You Were Here" answered "Playing
+        # Comfortably Numb by Pink Floyd" in 1.7s, because that was still
+        # on and it contained "pink floyd".
+        if wanted_name and wanted_name in lowered:
+            actual = line
+            break
+        if before and line != before:
+            actual = line
             break
     clear_pending_play()
-    # Report what the app is actually playing. Saying the search hit while
-    # a leftover track kept going is how "Nothing Else Matters" was
-    # announced as High Hopes — or the other way around.
+    # Say what is playing, and stop. Never instruct them to repeat
+    # themselves — they can hear what came on, and being told to say it
+    # again is the most irritating possible reply to a request that
+    # actually worked.
     if actual:
-        wanted = f"{match['name']} {match['artist']}".lower()
-        if match["name"].lower() not in actual.lower() and match["artist"].lower() not in actual.lower():
-            return (
-                f'Spotify is playing {actual}, not {match["name"]} by {match["artist"]}. '
-                "Say the title again and I'll retry."
-            )
         return f"Playing {actual}."
     return f'Playing {match["name"]} by {match["artist"]}.'
 
@@ -335,3 +385,48 @@ def volume_down() -> str:
     new_level = _get_volume() - _VOLUME_STEP
     _set_volume(new_level)
     return f"Volume down to {max(0, new_level)} percent."
+
+# --- follow-ups after a play ---------------------------------------------
+# Speech-to-text drops the title far more often than the artist, so the
+# next thing said is regularly a bare fragment: "by Metallica", "the other
+# one", or just a name. Measured live, "by Metallica" matched no Spotify
+# pattern, fell through to the chat model, and got back "I can't play
+# Spotify here. Say 'play <song> by <artist> on Spotify'" — a refusal, a
+# recitation of syntax, and a lie, since Max had played two tracks minutes
+# earlier. While music is the live subject, a fragment is a song.
+_LAST_MUSIC_AT: float = 0.0
+MUSIC_FOLLOWUP_SECONDS = 180.0
+
+# Questions and pleasantries are not song titles. Seen in the same log:
+# "how are you?" arrived right after a play and must stay conversation.
+_NOT_A_TITLE_RE = re.compile(
+    r"^\s*(?:how|what|why|who|when|where|which|is|are|was|were|do|does|did|"
+    r"can|could|will|would|should|shall|hey|hi|hello|thanks|thank|sorry|"
+    r"yes|yeah|no|nope|ok|okay|stop|pause|max)\b|\?",
+    re.IGNORECASE,
+)
+# A title-shaped fragment: words, apostrophes and ampersands, nothing that
+# looks like a sentence or another instruction.
+_TITLE_SHAPED_RE = re.compile(r"^[\w'&.,\- ]{2,60}$")
+
+
+def note_music_turn() -> None:
+    """Called after any successful playback — opens the follow-up window."""
+    global _LAST_MUSIC_AT
+    _LAST_MUSIC_AT = time.monotonic()
+
+
+def music_is_live() -> bool:
+    return (time.monotonic() - _LAST_MUSIC_AT) < MUSIC_FOLLOWUP_SECONDS
+
+
+def looks_like_followup(text: str) -> bool:
+    """A bare title/artist fragment said while music is the subject."""
+    stripped = (text or "").strip()
+    if not stripped or not music_is_live():
+        return False
+    if _NOT_A_TITLE_RE.search(stripped):
+        return False
+    if not _TITLE_SHAPED_RE.match(stripped):
+        return False
+    return len(stripped.split()) <= 8

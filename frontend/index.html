@@ -112,6 +112,15 @@
             </button>
           </div>
 
+          <div class="voice-vol" title="Loudness of Max's spoken replies — not the Mac volume">
+            <span class="voice-vol-kicker">Voice</span>
+            <button id="vol-down" class="voice-vol-btn" type="button" aria-label="Quieter">−</button>
+            <input id="tts-volume" type="range" min="5" max="100" step="5" value="35"
+                   aria-label="Spoken reply volume" />
+            <button id="vol-up" class="voice-vol-btn" type="button" aria-label="Louder">+</button>
+            <span id="tts-volume-readout" class="voice-vol-readout">35</span>
+          </div>
+
         </nav>
 
         <section class="hud-card" id="front-card" tabindex="0"
@@ -134,12 +143,23 @@
           <div id="model-roles"></div>
         </section>
 
-        <section class="hud-card" id="memory-card">
+        <section class="hud-card" id="screen-card">
           <div class="card-head">
-            <span>Memory</span>
-            <span id="memory-status" class="card-value">—</span>
+            <span>Screen</span>
+            <span id="screen-status" class="card-value">Standby</span>
           </div>
-          <ul id="memory-facts"></ul>
+          <div class="vision-frame">
+            <span class="scope-tick scope-tick-tl" aria-hidden="true"></span>
+            <span class="scope-tick scope-tick-tr" aria-hidden="true"></span>
+            <span class="scope-tick scope-tick-bl" aria-hidden="true"></span>
+            <span class="scope-tick scope-tick-br" aria-hidden="true"></span>
+            <img id="screen-frame" class="screen-img" alt="Live capture of this Mac's screen" />
+            <div id="screen-placeholder" class="screen-placeholder">Awaiting first capture…</div>
+            <div class="scope-live" aria-hidden="true">
+              <span class="scope-live-dot"></span>
+              <span>Live</span>
+            </div>
+          </div>
         </section>
 
         <section class="hud-card" id="status-card">
@@ -155,17 +175,6 @@
             <span id="status-dot" class="idle"></span>
             <span id="readout-link">—</span>
             <span id="readout-audio" class="card-value foot-value">0%</span>
-          </div>
-        </section>
-
-        <section class="hud-card" id="screen-card">
-          <div class="card-head">
-            <span>Screen Feed</span>
-            <span id="screen-status" class="card-value">Standby</span>
-          </div>
-          <div class="vision-frame">
-            <img id="screen-frame" class="screen-img" alt="Live capture of this Mac's screen" />
-            <div id="screen-placeholder" class="screen-placeholder">Awaiting first capture…</div>
           </div>
         </section>
 

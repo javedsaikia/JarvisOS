@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import urlparse
 
 LOOPBACK = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
 
@@ -104,17 +103,3 @@ def websocket_process_request(connection, request):
     return None
 
 
-def safe_bridge_url(candidate: str | None, fallback: str) -> str:
-    """HUD ?bridge= may only point at loopback. Anything else is ignored."""
-    if not candidate:
-        return fallback
-    try:
-        parsed = urlparse(candidate)
-    except Exception:
-        return fallback
-    if parsed.scheme not in ("ws", "wss"):
-        return fallback
-    host = parsed.hostname or ""
-    if not is_loopback_host(host):
-        return fallback
-    return candidate

@@ -8,6 +8,14 @@ import threading
 import time
 from pathlib import Path
 
+# Digital gain for Max's spoken voice (afplay -v), independent of the
+# Mac's output volume. Piper WAVs are normalised hot; at 100% they are
+# piercing on earphones even when the system volume looks modest.
+DEFAULT_VOLUME = 35
+MIN_VOLUME = 5
+MAX_VOLUME = 100
+VOLUME_STEP = 10
+
 PROJECT_ROOT = Path(__file__).parent.parent
 PIPER_BIN = PROJECT_ROOT / "max" / ".venv" / "bin" / "piper"
 
@@ -84,6 +92,43 @@ def synthesize(text: str, model_path: str, timeout: int = 60) -> bytes:
         Path(wav_path).unlink(missing_ok=True)
 
 
+def get_volume() -> int:
+    """Current spoken-voice level, 5–100. Reads the live config each time
+    so a key press or HUD slider applies to the next sentence."""
+    from max.config import load_config
+
+    try:
+        raw = load_config().get("tts_volume", DEFAULT_VOLUME)
+        return max(MIN_VOLUME, min(MAX_VOLUME, int(raw)))
+    except (TypeError, ValueError):
+        return DEFAULT_VOLUME
+
+
+def set_volume(level: int) -> int:
+    from max.config import update_config
+
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        level = DEFAULT_VOLUME
+    level = max(MIN_VOLUME, min(MAX_VOLUME, level))
+    update_config(tts_volume=level)
+    try:
+        from max import voice_events
+        voice_events.tts_volume(level)
+    except Exception:
+        pass
+    return level
+
+
+def adjust_volume(delta: int) -> int:
+    return set_volume(get_volume() + int(delta))
+
+
+def _afplay_gain() -> float:
+    return get_volume() / 100.0
+
+
 def play(wav_bytes: bytes, timeout: int = 60, stop_event: threading.Event | None = None) -> bool:
     """Play WAV bytes on this machine's speakers via afplay.
 
@@ -96,7 +141,7 @@ def play(wav_bytes: bytes, timeout: int = 60, stop_event: threading.Event | None
         f.write(wav_bytes)
         wav_path = f.name
     try:
-        proc = subprocess.Popen(["afplay", wav_path])
+        proc = subprocess.Popen(["afplay", "-v", f"{_afplay_gain():.3f}", wav_path])
         deadline = time.monotonic() + timeout
         while True:
             if stop_event is not None and stop_event.is_set():

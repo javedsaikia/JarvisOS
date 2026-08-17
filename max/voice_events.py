@@ -140,6 +140,11 @@ def mic_state(muted: bool) -> None:
     _write({"type": "mic_state", "muted": bool(muted)})
 
 
+def tts_volume(level: int) -> None:
+    """Spoken-voice gain changed (keys, HUD slider, or 'quieter')."""
+    _write({"type": "tts_volume", "level": int(level)})
+
+
 def speaking_stopped() -> None:
     """Playback ended early (barge-in, stop, or a failed clip). The UI
     holds the last envelope until it runs out, so an interruption has to

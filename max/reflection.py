@@ -102,10 +102,6 @@ _SECRET_RE = re.compile(
 )
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9 ]", " ", text.lower()).split().__str__()
-
-
 def _too_similar(candidate: str, existing: list[str]) -> bool:
     """Word-overlap duplicate check.
 
@@ -272,6 +268,13 @@ def reflect(mem, cfg: dict, verbose: bool = False) -> int:
     state = mem.state()
     last_ts = state.get("last_reflection_ts", 0)
     turns = mem.turns_since(last_ts)
+    # Assamese/Hindi/Odia STT junk must not become English profile
+    # "facts". Local Qwen already cannot read that script; it invents.
+    turns = [
+        t for t in turns
+        if not (t.get("backend") or "").startswith("sarvam:")
+        and not any(0x0B00 <= ord(ch) <= 0x0B7F for ch in (t.get("content") or ""))
+    ]
     if len(turns) < MIN_TURNS:
         return 0
 
@@ -327,28 +330,57 @@ def reflect(mem, cfg: dict, verbose: bool = False) -> int:
     return added
 
 
-def maybe_reflect_async(mem, cfg: dict) -> None:
-    """Called after a turn. Returns immediately; work happens on a thread.
+# Wait for this much quiet before distilling. Reflection runs a local 7B
+# model, and on this machine that is not a background task in any
+# meaningful sense — it is the CPU. Measured live: while a 13.5s reflection
+# ran, speech-to-text on the very next utterance went from a 0.71s median
+# to 8.54s, which the user experiences as Max having gone deaf. "Runs on a
+# thread so it costs no latency" was only ever true of OUR thread; the
+# Ollama server is a separate process and does not care.
+#
+# So the trigger is now "the conversation stopped", not "a turn ended".
+# Each new turn pushes the timer out, so a distillation can only start in
+# a genuine lull — which is also when the window it is summarizing is
+# actually complete.
+IDLE_DELAY_SECONDS = 90
 
-    The lock is the whole concurrency story: if a reflection is already
-    running (or the voice loop and the web UI both finish a turn at once),
-    the second caller simply does nothing rather than distilling the same
-    window twice and doubling the profile's entries.
+_pending_timer: threading.Timer | None = None
+_timer_lock = threading.Lock()
+
+
+def maybe_reflect_async(mem, cfg: dict) -> None:
+    """Called after a turn. Returns immediately; work is deferred until the
+    conversation has been quiet for IDLE_DELAY_SECONDS.
+
+    The lock is the rest of the concurrency story: if a reflection is
+    already running (or the voice loop and the web UI both go quiet at
+    once), the second caller simply does nothing rather than distilling the
+    same window twice and doubling the profile's entries.
     """
     if not due(mem, cfg):
         return
-    if not _running.acquire(blocking=False):
-        return
 
     def run():
+        if not _running.acquire(blocking=False):
+            return
         try:
-            reflect(mem, cfg)
+            # Re-checked here, not just when the timer was armed: the
+            # window may have been distilled by another front end during
+            # the wait.
+            if due(mem, cfg):
+                reflect(mem, cfg)
         except Exception as e:  # never take a turn down with us
             print(f"[memory] reflection failed: {type(e).__name__}: {e}", flush=True)
         finally:
             _running.release()
 
-    threading.Thread(target=run, daemon=True).start()
+    global _pending_timer
+    with _timer_lock:
+        if _pending_timer is not None:
+            _pending_timer.cancel()
+        _pending_timer = threading.Timer(IDLE_DELAY_SECONDS, run)
+        _pending_timer.daemon = True
+        _pending_timer.start()
 
 
 def main():

@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { paused } from "./idle";
 
 const CORE_VERTEX_SHADER = `
   varying vec3 vNormal;
@@ -133,7 +134,11 @@ export class Orb {
     this.resize();
     window.addEventListener("resize", () => this.resize());
 
-    this.renderer.setAnimationLoop(() => this.tick());
+    // three.js keeps calling this; skip the WebGL work while hidden.
+    this.renderer.setAnimationLoop(() => {
+      if (paused()) return;
+      this.tick();
+    });
   }
 
   private buildParticleRing(): THREE.Points {

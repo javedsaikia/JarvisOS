@@ -143,17 +143,42 @@ class WSConfirm:
     third implementation of it, not a new mechanism.
     """
 
+    # Nobody is coming back with an answer after this long, and an
+    # unanswered confirmation used to block its worker thread forever:
+    # close the tab mid-prompt and that thread, and the turn it was
+    # running, were stuck for the life of the process. Timing out as NO is
+    # the safe direction — every caller of confirm_fn treats false as
+    # "don't do it", so a lost connection can never approve a shell
+    # command, a paste, or a phone call.
+    TIMEOUT_SECONDS = 180
+
     def __init__(self, loop: asyncio.AbstractEventLoop, ws):
         self.loop = loop
         self.ws = ws
         self.answers: queue.Queue = queue.Queue()
+        self.closed = threading.Event()
 
     def __call__(self, prompt: str) -> bool:
-        asyncio.run_coroutine_threadsafe(
-            self.ws.send(json.dumps({"type": "confirm_request", "prompt": prompt})),
-            self.loop,
-        )
-        return self.answers.get()
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.ws.send(json.dumps({"type": "confirm_request", "prompt": prompt})),
+                self.loop,
+            ).result(timeout=10)
+        except Exception as e:
+            print(f"[bridge] could not ask for confirmation: {e}", flush=True)
+            return False
+        deadline = time.monotonic() + self.TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if self.closed.is_set():
+                print("[bridge] client disconnected during a confirmation — treating as no",
+                      flush=True)
+                return False
+            try:
+                return bool(self.answers.get(timeout=0.5))
+            except queue.Empty:
+                continue
+        print("[bridge] confirmation timed out — treating as no", flush=True)
+        return False
 
 
 def _is_voice_loop_pid(pid: int) -> bool:
@@ -203,7 +228,6 @@ def _voice_running() -> bool:
 
 def _signal_voice(sig: int) -> bool:
     sent = False
-    global _voice_proc
     if _voice_proc is not None and _voice_proc.poll() is None:
         try:
             _voice_proc.send_signal(sig)
@@ -358,8 +382,18 @@ async def _handle_message(ws, loop: asyncio.AbstractEventLoop, confirm: WSConfir
         tts_enabled = cfg.get("tts_enabled")
         tts_backend = cfg.get("tts_backend")
         voice_model = cfg.get("tts_voice_model")
-        chat_model = cfg.get("bridge_ollama_model", cfg["ollama_model"])
         chat_max_tokens = cfg.get("bridge_ollama_max_tokens")
+        # bridge_ollama_model pins a smaller *local* model for typed HUD
+        # turns. It must not survive a dashboard choice of a cloud model
+        # for the chat role — cli.handle_ollama treats any model_override
+        # as "force provider ollama", so passing it unconditionally meant
+        # the HUD always answered on the local 1.5B while the Front card
+        # cheerfully reported Groq 70B. Same rule the voice loop already
+        # applies (voice_loop._voice_model_override).
+        chat_entry = llm.resolve(cfg, "chat")
+        pinned = cfg.get("bridge_ollama_model")
+        chat_model = pinned if (pinned and chat_entry["local"]) else None
+        chat_label = cli.label("ollama" if chat_model else llm.backend_name(chat_entry))
     # Muted whenever voice_loop is running: it and the web UI share this
     # Mac's physical speakers/mic, so anything the web UI speaks aloud can
     # bleed straight into voice_loop's microphone — seen live, a web-UI
@@ -394,36 +428,45 @@ async def _handle_message(ws, loop: asyncio.AbstractEventLoop, confirm: WSConfir
             return
         if not streamed:
             streamed = True
-            send_now({"type": "reply_start", "backend": "ollama", "label": cli.label("ollama")})
+            # Named from the model that is actually about to answer, not a
+            # hardcoded "ollama" — reply_end carries the real backend, and
+            # the two disagreeing made the stream open under one name and
+            # close under another.
+            send_now({"type": "reply_start", "backend": "ollama", "label": chat_label})
             if stream_tts:
                 speech = _WebStreamingSpeech(loop, ws, voice_model)
         send_now({"type": "reply_chunk", "text": piece})
         if speech:
             speech.feed(piece)
 
-    backend, response = await loop.run_in_executor(
-        None,
-        lambda: cli.process_turn(
-            text,
-            cfg,
-            mem,
-            True,
-            confirm,
-            model_override=chat_model,
-            ollama_options=chat_options,
-            stream_callback=on_chunk,
-        ),
-    )
+    try:
+        backend, response = await loop.run_in_executor(
+            None,
+            lambda: cli.process_turn(
+                text,
+                cfg,
+                mem,
+                True,
+                confirm,
+                model_override=chat_model,
+                ollama_options=chat_options,
+                stream_callback=on_chunk,
+            ),
+        )
+    finally:
+        # Whatever happened, the synthesis worker gets its sentinel — an
+        # exception here used to strand that thread on queue.get() forever.
+        if speech is not None:
+            speech.finish()
+            speech = None
 
     if streamed:
         if speech:
+            # finish() is what posts the worker thread's sentinel; skipping
+            # it on an error path leaks a thread blocked on queue.get().
             await loop.run_in_executor(None, speech.finish)
         if not closed:
             await ws.send(json.dumps({"type": "reply_end", "backend": backend, "label": cli.label(backend)}))
-            try:
-                await ws.send(json.dumps(_memory_payload()))
-            except ConnectionClosed:
-                pass
         return
 
     try:
@@ -451,28 +494,6 @@ async def _handle_message(ws, loop: asyncio.AbstractEventLoop, confirm: WSConfir
                 pass
         except ConnectionClosed:
             pass
-
-    try:
-        await ws.send(json.dumps(_memory_payload()))
-    except ConnectionClosed:
-        pass
-
-
-def _memory_payload() -> dict:
-    """Facts and a few profile lines for the HUD Memory card."""
-    facts: list[str] = []
-    for line in mem.load_facts().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            item = stripped[2:].strip()
-            if item:
-                facts.append(item)
-    style: list[str] = []
-    try:
-        style = (mem.load_profile_sections().get("Speaking style") or [])[:4]
-    except Exception:
-        pass
-    return {"type": "memory_state", "facts": facts[:12], "style": style}
 
 
 def _models_payload() -> dict:
@@ -644,6 +665,10 @@ async def _voice_events_poll_loop() -> None:
                 await _broadcast(json.dumps({
                     "type": "mic_state", "muted": bool(event.get("muted")),
                 }))
+            elif event.get("type") == "tts_volume":
+                await _broadcast(json.dumps({
+                    "type": "tts_volume", "level": int(event.get("level", tts.DEFAULT_VOLUME)),
+                }))
             elif event.get("type") == "screen_capture":
                 # "Get out of the way, I'm taking a screenshot" — only
                 # sent on the fallback capture path (max/screen_capture.py
@@ -758,10 +783,6 @@ async def _transcript_poll_loop() -> None:
                     await client.send(payload)
                 except ConnectionClosed:
                     _connected_clients.discard(client)
-        try:
-            await _broadcast(json.dumps(_memory_payload()))
-        except Exception:
-            pass
 
 
 async def handle_connection(ws) -> None:
@@ -779,9 +800,11 @@ async def handle_connection(ws) -> None:
             "enabled": feed_allowed and _screen_feed_on.is_set(),
         }))
         await ws.send(json.dumps(_models_payload()))
-        await ws.send(json.dumps(_memory_payload()))
         await ws.send(json.dumps({
             "type": "mic_state", "muted": control.mic_muted(),
+        }))
+        await ws.send(json.dumps({
+            "type": "tts_volume", "level": tts.get_volume(),
         }))
         async for raw in ws:
             try:
@@ -828,6 +851,10 @@ async def handle_connection(ws) -> None:
                         "message": "That model can't be selected — check the API key in max/.env.",
                     }))
 
+            elif mtype == "set_tts_volume":
+                level = tts.set_volume(msg.get("level", tts.DEFAULT_VOLUME))
+                await _broadcast(json.dumps({"type": "tts_volume", "level": level}))
+
             elif mtype == "set_mic":
                 # Privacy switch: writes the shared control state, which
                 # the voice loop is polling. The UI does not go green
@@ -861,6 +888,9 @@ async def handle_connection(ws) -> None:
     except ConnectionClosed:
         pass
     finally:
+        # Wakes a worker thread parked in WSConfirm — without this it sat
+        # on a confirmation whose answer could never arrive.
+        confirm.closed.set()
         _connected_clients.discard(ws)
 
 

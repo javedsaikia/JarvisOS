@@ -8,8 +8,15 @@ ROOT=$(pwd)
 # *.localhost resolves on this Mac with no /etc/hosts edit.
 echo "HUD hostname: max.localhost (no hosts file change)"
 
-echo "Building the HUD..."
-(cd frontend && npm run build)
+# The HUD is already on disk in frontend/dist. Rebuilding on every
+# install is what made "open the project" feel like starting from
+# scratch. Only build when asked, or when there is nothing to serve.
+if [ "${1:-}" = "--rebuild" ] || [ ! -f frontend/dist/index.html ]; then
+  echo "Building the HUD..."
+  (cd frontend && npm run build)
+else
+  echo "HUD already built (frontend/dist). Pass --rebuild to rebuild."
+fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
 # Templates use __ROOT__; fill in this machine's path so the repo never
@@ -21,6 +28,20 @@ done
 
 launchctl bootout "gui/$(id -u)/com.max.caddy" 2>/dev/null || true
 launchctl bootout "gui/$(id -u)/com.max.bridge" 2>/dev/null || true
+# Pre-rename leftover. Two Caddys on :2015 if this stays loaded.
+launchctl bootout "gui/$(id -u)/com.orin.caddy" 2>/dev/null || true
+launchctl bootout "gui/$(id -u)/com.orin.bridge" 2>/dev/null || true
+rm -f "$HOME/Library/LaunchAgents/com.orin.caddy.plist" \
+      "$HOME/Library/LaunchAgents/com.orin.bridge.plist"
+
+# Ad-hoc Caddy/bridge (started by hand or start_max.sh) still hold the
+# ports. Stop those so the login agents can own them instead of
+# crash-looping on "address already in use". Voice is left alone.
+pkill -f "caddy run --config ${ROOT}/Caddyfile" 2>/dev/null || true
+# -- so macOS pkill does not treat "-m" as a flag.
+pkill -f -- "max.bridge" 2>/dev/null || true
+sleep 1
+
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.max.caddy.plist"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.max.bridge.plist"
 launchctl enable "gui/$(id -u)/com.max.caddy"

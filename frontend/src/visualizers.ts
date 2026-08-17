@@ -11,6 +11,8 @@
 
 import type { AudioPlayer } from "./audio";
 
+import { paused } from "./idle";
+
 const BLUE = "#00d4ff";
 const BLUE_SOFT = "rgba(0, 212, 255, 0.5)";
 const BLUE_FAINT = "rgba(0, 212, 255, 0.18)";
@@ -78,6 +80,9 @@ export class Visualizers {
   }
 
   private loop = (): void => {
+    // Re-arm before bailing: dropping the frame must not stop the
+    // loop, or it would never come back when the page is shown again.
+    if (paused()) return void requestAnimationFrame(this.loop);
     const localPlaying = this.audio.isPlaying();
     this.drawWave(localPlaying);
     this.drawSpectrum(localPlaying);

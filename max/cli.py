@@ -4,17 +4,19 @@ via --once for voice-pipeline integration.
 """
 import argparse
 import json
+import random
 import re
 import subprocess
+from pathlib import Path
 from typing import Callable
 
-from max import claude_handoff, composio_client, location_client, maps_client, news_client, ollama_client, router, sarvam_client, tts
+from max import claude_handoff, composio_client, compose, location_client, maps_client, news_client, ollama_client, router, sarvam_client, tts
 from max.config import load_config
 from max.memory import MemoryStore
 from max import llm, reflection, wake_phrase
-from max.persona import build_system_prompt
-from max.wit import VOICE
-from max.tools import browser, calendar, calling, files, location, news, notes, parsing, registry, shell, spotify, vision
+from max.persona import build_system_prompt, build_voice_prompt
+from max.wit import VOICE, spoken_fail
+from max.tools import browser, calendar, calling, email_compose, event_draft, files, location, news, notes, omdb, parsing, registry, reminder, shell, spotify, vision
 
 HELP_TEXT = """Commands:
   /remember <fact>   Save a durable fact/preference to memory
@@ -67,7 +69,7 @@ def _misheard_names(cfg: dict) -> tuple[str, ...]:
     the model is told never to mistake for the user's name.
     """
     names: list[str] = []
-    for phrase in cfg.get("wake_phrases") or ["hey max"]:
+    for phrase in cfg.get("wake_phrases") or ["hey max", "max"]:
         name = phrase.strip().split()[-1].lower() if phrase.strip() else ""
         if not name:
             continue
@@ -89,7 +91,11 @@ def handle_ollama(
     model_role: str = "chat",
     used_entry: dict | None = None,
 ) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
+    # Spoken turns get the compact prompt. The full one is ~2,213 tokens
+    # of chat guidance on a path where latency is the whole point, and
+    # most of it is explanation the model does not need to behave.
+    builder = build_voice_prompt if model_role == "voice" else build_system_prompt
+    system_prompt = builder(cfg["user_name"], mem.context_block(), _misheard_names(cfg), ability_sentence(cfg))
     messages = [{"role": "system", "content": system_prompt}]
     # Excludes Sarvam turns — seen live: Ollama's small English-tuned model
     # produced garbled Hindi-ish gibberish (not just imitation, actual
@@ -130,7 +136,8 @@ def handle_ollama(
         )
     except llm.LLMError as e:
         if entry["provider"] == "ollama":
-            return f"(Ollama unavailable: {e})"
+            print(f"[chat] local model failed: {e}", flush=True)
+            return spoken_fail()
         # A cloud model that fails should not end the turn — fall back to
         # the local one that is always there, and say so, rather than
         # handing back an error where an answer was expected.
@@ -144,7 +151,110 @@ def handle_ollama(
                 messages, local, cfg, options=options, stream_callback=stream_callback
             )
         except llm.LLMError as local_error:
-            return f"({entry['label']} failed: {e}; local fallback also failed: {local_error})"
+            print(f"[chat] fallback failed: {local_error}", flush=True)
+            return spoken_fail()
+
+
+_ASSAMESE_STYLE_PATH = Path(__file__).parent / "memory" / "assamese_style.md"
+_ASSAMESE_STYLE_MAX = 800
+_ASSAMESE_JOKES_PATH = Path(__file__).parent / "memory" / "assamese_jokes.md"
+_last_assamese_joke: str | None = None
+
+
+def _assamese_style_block() -> str:
+    """Voice/Do/Don't only. Example pairs and "How I sound" were treated
+    as live facts (seen: 'এতিয়া ব্যস্ত আছোঁ' → 'Javed is in a meeting').
+    """
+    try:
+        text = _ASSAMESE_STYLE_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    keep: list[str] = []
+    wanted = False
+    for ln in text.splitlines():
+        if ln.startswith("## "):
+            heading = ln.strip().lower()
+            wanted = heading in ("## voice", "## do", "## don't", "## dont")
+            continue
+        if not wanted or ln.startswith("#"):
+            continue
+        keep.append(ln)
+    return "\n".join(keep).strip()[:_ASSAMESE_STYLE_MAX]
+
+
+_AS_GREET_RE = re.compile(
+    r"গু\S*\s*ম\S*|শুভ\s*(?:ৰাতিপুৱা|সন্ধিয়া)|নমস্কাৰ|"
+    r"good\s*mornin[g']?|good\s*evening|hello",
+    re.I,
+)
+_AS_HOW_ARE_YOU_RE = re.compile(r"কি\s*খবৰ", re.I)
+_AS_VAGUE = {
+    "এনেকুৱা", "এনেকুৱা।", "উম", "হুম", "অ", "আ", "hmm", "huh",
+}
+_AS_ACK_RE = re.compile(
+    r"^(?:হয়|হৈ|হঁ|হাঁ|yes|yeah|yep|ok|okay|ঠিক|আচ্ছা)"
+    r"(?:[\s,।.]+(?:হয়|হৈ|হঁ|হাঁ|yes|yeah|yep|ok|okay|ঠিক|আচ্ছা))*$",
+    re.I,
+)
+_AS_LECTURE_RE = re.compile(
+    r"নিলিখিলা|বুজি নাপালোঁ|বুজিম\?|বাৰে বাৰে|হয় বুলি|'হয়'|“হয়”",
+)
+
+
+def _assamese_is_greeting(text: str) -> bool:
+    """True only when the whole line is a greeting.
+
+    Seen live: search() on 'কি খবৰ' ate 'কি খবৰ? মই ভালে, আপুনি ভালে আছে'
+    and 'ভাত খালে?' and replied 'শুভ ৰাতিপুৱা' every time.
+    """
+    t = _assamese_core(text)
+    return bool(t) and bool(_AS_GREET_RE.fullmatch(t))
+
+
+def _assamese_is_how_are_you(text: str) -> bool:
+    t = _assamese_core(text)
+    return bool(t) and bool(_AS_HOW_ARE_YOU_RE.fullmatch(t))
+
+
+def _assamese_core(text: str) -> str:
+    t = sarvam_client.odia_to_assamese(text or "")
+    t = re.sub(r"[\s।.!,?]+", " ", t).strip()
+    t = re.sub(
+        r"^(?:হে(?:ই)?|হায়)?\s*(?:ম্যাক্স|মেক্স|মাক্স|ম্য়াক্স|এক্স|max)\s*",
+        "",
+        t,
+        flags=re.I,
+    ).strip()
+    t = re.sub(r"\s*ম\S*ক্স$", "", t, flags=re.I).strip()
+    return t
+
+
+def _assamese_is_vague(text: str) -> bool:
+    return _assamese_core(text) in _AS_VAGUE
+
+
+def _assamese_is_ack(text: str) -> bool:
+    t = _assamese_core(text)
+    return bool(t) and bool(_AS_ACK_RE.fullmatch(t))
+
+
+def _sarvam_skip_history(content: str) -> bool:
+    t = (content or "").strip()
+    if not t or t in "।./":
+        return True
+    if t.startswith("(Sarvam unavailable"):
+        return True
+    if re.search(r"\b(gud|somefin|ur ai|2 b ur)\b", t, re.I):
+        return True
+    if re.fullmatch(r"(?:হে(?:ই)?\s*)?(?:ম্যাক্স|মেক্স|মাক্স|max)[।.!?]*", t, re.I):
+        return True
+    if _AS_LECTURE_RE.search(t):
+        return True
+    if _assamese_is_ack(t) or _assamese_is_vague(t):
+        return True
+    if re.search(r"\bJaved\b.+(?:মিটিং|ফ্ৰী|ব্যস্ত)", t):
+        return True
+    return False
 
 
 def handle_sarvam(
@@ -168,43 +278,77 @@ def handle_sarvam(
     # "Can you speak in Hindi?" strips down to "can you?" — Sarvam then
     # answered in English about what "that" is. If nothing real is left,
     # acknowledge in the target language and wait.
+    user_text = sarvam_client.odia_to_assamese(user_text or "")
     if not (user_text or "").strip():
         if language_code == "hi-IN":
             return "Haan, Hindi mein hi. Boliye — main sun raha hoon, aur thoda mazak bhi karunga."
         if language_code == "as-IN":
             return "হয়, অসমীয়াতেই। কওক — মই শুনি আছোঁ, আৰু অলপ ধেমালিও কৰিম।"
         return f"Yes — I'll answer in {language_name}, and I'll try to be good company. What do you need?"
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
     if language_code == "as-IN":
-        system_prompt += (
-            "\n\nRespond in Assamese (অসমীয়া), in Assamese script, "
-            "regardless of what language the user writes or speaks in. "
-            "One or two short sentences. Summarize, then ask what next. "
-            "Same dry, funny voice, in Assamese. No lectures. "
-            "Do not switch to Hindi or Bengali."
+        name = cfg["user_name"]
+        # Seen live: "গুড মাৰ্ণিং" became "Javed is in a meeting" because
+        # the prompt said "Javedৰ সহায়ক" and the style file had
+        # "এতিয়া ব্যস্ত আছোঁ". Talk TO him. Do not invent a calendar.
+        if _assamese_is_greeting(user_text):
+            return "শুভ ৰাতিপুৱা। কি খবৰ?"
+        if _assamese_is_how_are_you(user_text):
+            return "ভালেই আছোঁ। তোমাৰ দিনটো কেনে?"
+        if _assamese_is_ack(user_text):
+            return "কওক।"
+        if _assamese_is_vague(user_text):
+            return "কওক, কি লাগে?"
+        system_prompt = (
+            f"তুমি Max। এতিয়া {name} তোমাৰ লগত কথা পাতিছে — তেওঁ ব্যৱহাৰকাৰী। "
+            f"{name}ক তুমি বুলি সম্বোধন কৰা। তেওঁ আন ঠাইত আছে বা মিটিংত আছে বুলি নাভাবিবা, "
+            "তেওঁৰ বিষয়ে তৃতীয় পুৰুষত ৰিপ’ৰ্ট নকৰিবা।\n"
+            "কেৱল অসমীয়াত (অসমীয়া লিপিত) উত্তৰ দিবা। হিন্দী, বাংলা, বা ইংৰাজী SMS নাই।\n"
+            "কেৱল এইবাৰৰ কথাটোৰ উত্তৰ দিবা। পুৰণা টপিক, মিটিং, খোৱা-বোৱা, বা ইমেইল "
+            "তেওঁ এতিয়া নুসুধিলে আনিব নালাগে। তথ্য নাজানিলে মিছা নাপাতিবা।\n"
+            "বুজি নাপালে স্বীকাৰ কৰি আকৌ ক’বলৈ ক’বা। "
+            "২–৪ বাক্য। জোক নিজে লিখিব নালাগে।"
         )
+        style = _assamese_style_block()
+        if style:
+            system_prompt += (
+                "\n\nকথা কোৱাৰ ঢং (এতিয়াৰ তথ্য নহয়, কেৱল ষ্টাইল):\n" + style
+            )
     else:
+        system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg), ability_sentence(cfg))
         system_prompt += (
             f"\n\nRespond in {language_name}, regardless of what language "
-            "the user writes or speaks in. One or two short sentences. "
-            "Summarize, then ask what next. Same dry, funny voice. No lectures."
+            "the user writes or speaks in. Two to four short sentences. "
+            "Answer what they asked. Same dry, funny voice. No lectures. "
+            "No English SMS slang."
         )
     messages = [{"role": "system", "content": system_prompt}]
-    for turn in mem.recent_turns(recent_turns_limit):
-        content = (turn.get("content") or "").strip()
-        # Sarvam 400: "user.content : String should have at least 1
-        # character". Seen live after a language-switch turn logged an
-        # empty user line ("Max speak in Assamese" stripped to nothing).
-        if not content or content.startswith("(Sarvam unavailable"):
+    kept = 0
+    history_cap = 4 if language_code == "as-IN" else 6
+    for turn in reversed(mem.recent_turns(recent_turns_limit)):
+        content = sarvam_client.odia_to_assamese((turn.get("content") or "")).strip()
+        if _sarvam_skip_history(content):
             continue
         role = "assistant" if turn["role"] == "assistant" else "user"
-        messages.append({"role": role, "content": content})
+        messages.insert(1, {"role": role, "content": content})
+        kept += 1
+        if kept >= history_cap:
+            break
     messages.append({"role": "user", "content": user_text.strip()})
 
     try:
-        return sarvam_client.chat(messages)
+        reply = sarvam_client.chat(
+            messages,
+            temperature=0.6,
+            max_tokens=120,
+            timeout=20,
+            reasoning=False,
+        )
     except sarvam_client.SarvamError as e:
-        return f"(Sarvam unavailable: {e})"
+        print(f"[sarvam] failed: {e}", flush=True)
+        return spoken_fail()
+    if language_code == "as-IN" and _AS_LECTURE_RE.search(reply or ""):
+        return "কওক, কি লাগে?"
+    return reply
 
 
 def handle_claude_code(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
@@ -223,16 +367,188 @@ def handle_claude_code(user_text: str, cfg: dict, interactive: bool, confirm_fn=
         # listening, rather than reporting it as a failure.
         raise
     except claude_handoff.ClaudeCodeError as e:
-        return f"(Claude Code handoff failed: {e})"
+        print(f"[claude] failed: {e}", flush=True)
+        return spoken_fail()
+
+
+def _body_gist(body: str, limit: int = 90) -> str:
+    """First real sentence of an email body — the deterministic fallback
+    when the summarizer can't run. Never invents: this is the email's own
+    words, just shortened."""
+    text = re.sub(r"\s+", " ", body or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"^(.{20,%d}?[.!?])(?:\s|$)" % limit, text)
+    gist = match.group(1) if match else text[:limit].rstrip()
+    return gist.strip().rstrip(".,;:-")
+
+
+def _summarize_inbox(rows: list[dict], cfg: dict) -> None:
+    """Fill each row's "summary" with one short line about what it says.
+
+    Same contract as handle_news: the model sees ONLY the fetched text and
+    is told to summarize it, never to add to it — an inbox summary that
+    invents a detail is worse than no summary. One request for the whole
+    inbox, not one per email, because this sits directly in front of a
+    spoken reply. Every row gets a deterministic fallback first, so a model
+    that fails or returns junk degrades to the email's own opening line
+    rather than to silence.
+    """
+    for row in rows:
+        row["summary"] = _body_gist(row.get("body") or "")
+    if not rows:
+        return
+
+    listing = "\n\n".join(
+        f"[{i}] SUBJECT: {r.get('subject') or '(no subject)'}\nBODY: {r.get('body') or '(empty)'}"
+        for i, r in enumerate(rows, 1)
+    )
+    prompt = (
+        "For each email below, write one short line saying what it is about.\n"
+        "- The subject is already read out, so your line must add something "
+        "the subject does not say. If the body adds nothing, return \"\" for "
+        "that number rather than restating the subject.\n"
+        "- Use ONLY what is in that email's text. Do not add facts, do not "
+        "guess, do not mention the sender or any email address.\n"
+        "- At most 12 words. Plain spoken English, no markdown, no emoji.\n"
+        'Return ONLY a JSON object mapping the number to the line, like '
+        '{"1": "...", "2": ""}.\n\n' + listing
+    )
+    try:
+        reply = llm.chat(
+            [
+                {"role": "system", "content": "You summarize emails from supplied text only."},
+                {"role": "user", "content": prompt},
+            ],
+            llm.resolve(cfg, "chat"),
+            cfg,
+            # Five short lines is not much, but a reasoning model bills
+            # its thinking to the same budget — at 220 the JSON came back
+            # truncated for a full inbox and every row silently fell back
+            # to its raw first sentence.
+            options={"num_predict": 500},
+        )
+    except llm.LLMError as e:
+        print(f"[email] inbox summary skipped: {e}", flush=True)
+        return
+
+    start, end = reply.find("{"), reply.rfind("}")
+    if start == -1 or end == -1:
+        return
+    try:
+        data = json.loads(reply[start:end + 1])
+    except json.JSONDecodeError:
+        return
+    if not isinstance(data, dict):
+        return
+    for i, row in enumerate(rows, 1):
+        line = data.get(str(i), data.get(i))
+        # An explicit "" means "the body adds nothing to the subject" — a
+        # real answer, so honour it and say only the subject. The
+        # deterministic gist stays only when the model skipped the row.
+        if isinstance(line, str):
+            row["summary"] = re.sub(r"\s+", " ", line).strip().strip('"').rstrip(".")
+
+
+def _inbox_line(cfg: dict) -> str:
+    try:
+        rows = composio_client.fetch_inbox(5)
+    except (composio_client.ComposioError, llm.LLMError) as e:
+        print(f"[email] inbox failed: {e}", flush=True)
+        return spoken_fail()
+    email_compose.remember_inbox(rows)
+    _summarize_inbox(rows, cfg)
+    return composio_client.inbox_speech(rows)
+
+
+def _save_gmail_draft(draft: dict) -> str:
+    try:
+        saved = composio_client.create_email_draft(
+            draft.get("to") or [],
+            draft.get("subject") or "",
+            draft.get("body") or "",
+        )
+    except (composio_client.ComposioError, llm.LLMError) as e:
+        print(f"[email] draft failed: {e}", flush=True)
+        return spoken_fail()
+    email_compose.set_gmail_id(saved.get("id") or "")
+    who = ", ".join(draft.get("to") or [])
+    subj = draft.get("subject") or "(no subject)"
+    return f"Draft in Gmail for {who}, subject {subj}. Not sent. Say send it if that's right."
 
 
 def handle_email(user_text: str, cfg: dict, action: str = "read",
                  interactive: bool = True, confirm_fn=text_confirm) -> str:
-    """Gmail through the authorized Composio account. Writes confirm first."""
-    if action == "write" and interactive:
-        if not confirm_fn("Send or change an email?"):
-            return "(Cancelled — nothing sent.)"
-    return handle_composio(user_text, cfg, domain="email", action=action)
+    """Gmail via Composio. Drafts use GMAIL_CREATE_EMAIL_DRAFT.
+
+    Inbox reads are a deterministic list — Groq must not rewrite them.
+    A spoken name is resolved with GMAIL_SEARCH_PEOPLE (Sabina Saikia
+    live-resolved to sabinafarmin@gmail.com). Nothing is sent until
+    they confirm; then GMAIL_SEND_DRAFT.
+    """
+    if action != "write" and not email_compose.active():
+        return _inbox_line(cfg)
+
+    if email_compose.wants_cancel(user_text):
+        email_compose.cancel()
+        return "Dropped the draft."
+
+    prefix = ""
+    if email_compose.wants_inbox(user_text):
+        prefix = _inbox_line(cfg) + " "
+
+    if not email_compose.active() or email_compose.is_new_draft(user_text):
+        email_compose.start()
+    draft = email_compose.apply_text(user_text)
+
+    if email_compose.wants_reply(user_text) and not draft.get("subject"):
+        name = draft.get("name") or email_compose.extract_person_name(user_text)
+        draft["subject"] = f"Re: {name}" if name else "Re: your email"
+        email_compose.apply_text(f"subject {draft['subject']}")
+        draft = email_compose.snapshot()
+
+    if email_compose.wants_send(user_text) or (
+        email_compose.missing() is None and re.search(r"\bsend\b", user_text, re.I)
+    ):
+        if email_compose.missing():
+            need = email_compose.missing()
+            return prefix + f"Not yet — I still need the {need}."
+        if interactive and not confirm_fn(
+            f'Send to {", ".join(draft["to"])} subject "{draft["subject"]}"?'
+        ):
+            if not draft.get("gmail_id"):
+                return prefix + _save_gmail_draft(draft)
+            return prefix + "Held in Gmail drafts. Say send it when you want it gone."
+        try:
+            if not draft.get("gmail_id"):
+                saved = composio_client.create_email_draft(
+                    draft["to"], draft["subject"], draft["body"]
+                )
+                email_compose.set_gmail_id(saved.get("id") or "")
+                draft = email_compose.snapshot()
+            if draft.get("gmail_id"):
+                composio_client.send_gmail_draft(draft["gmail_id"])
+            else:
+                return prefix + spoken_fail()
+        except (composio_client.ComposioError, llm.LLMError) as e:
+            print(f"[email] send failed: {e}", flush=True)
+            return prefix + spoken_fail()
+        finally:
+            email_compose.cancel()
+        return prefix + f'Sent to {", ".join(draft["to"])}.'
+
+    need = email_compose.missing()
+    if need == "to":
+        named = draft.get("name")
+        if named:
+            return prefix + f"I don't have an address for {named}. Spell the email."
+        return prefix + "Who is it to? Name them or give the address."
+    if need == "subject":
+        who = f' to {", ".join(draft["to"])}' if draft["to"] else ""
+        return prefix + f"Subject{who}?"
+    if need == "body":
+        return prefix + f'Subject is "{draft["subject"]}". What should it say?'
+    return prefix + _save_gmail_draft(draft)
 
 
 def handle_composio(user_text: str, cfg: dict, domain: str = "github", action: str = "read") -> str:
@@ -242,7 +558,26 @@ def handle_composio(user_text: str, cfg: dict, domain: str = "github", action: s
     try:
         return composio_client.run(user_text, cfg, domain=domain, action=action)
     except (composio_client.ComposioError, llm.LLMError) as e:
-        return f"(That request failed: {e})"
+        print(f"[composio] failed: {e}", flush=True)
+        return spoken_fail()
+
+
+def handle_voice_volume(action: str) -> str:
+    """Max's spoken-reply gain, not Spotify and not the Mac output volume."""
+    before = tts.get_volume()
+    if action == "volume_down":
+        level = tts.adjust_volume(-tts.VOLUME_STEP)
+        if level == before:
+            return "That's as quiet as I go."
+        return f"Speaking at {level} percent."
+    if action == "volume_up":
+        level = tts.adjust_volume(tts.VOLUME_STEP)
+        if level == before:
+            return "That's as loud as I go."
+        return f"Speaking at {level} percent."
+    if action == "ping":
+        return "Yes. I'm here."
+    return "(Unrecognized voice action.)"
 
 
 def handle_spotify(user_text: str, cfg: dict) -> str:
@@ -273,12 +608,23 @@ def handle_spotify_control(action: str, user_text: str) -> str:
         query = parsing.extract_song_query(user_text)
         if parsing.is_referential_song_query(query):
             query = spotify.last_query() or ""
+        if query and not parsing.has_song_trigger(user_text) and not parsing.split_song_artist(query)[1]:
+            # Play-track routed without a play verb — refuse travel/email
+            # leftovers that Spotify would happily search.
+            if re.search(
+                r"\b(i want to go|by a (car|taxi|cab|bus|train)|e-?mail|draft|volume)\b",
+                query,
+                re.I,
+            ):
+                # Leftovers from an unrelated request, not a title. Ask
+                # like a person rather than reciting the syntax.
+                return "That didn't sound like a song. What do you want on?"
         if query:
             return spotify.play_track(query)
         # Do not fall through to generic play() — that resumes whatever
         # happens to be paused, which is how "play it" started a random
         # track. Ask for a name instead.
-        return "Tell me the song name and I'll play it."
+        return "What do you want me to play?"
     if action == "pause":
         return spotify.pause()
     if action == "mute":
@@ -356,7 +702,7 @@ def handle_shell(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_c
 
 
 def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive: bool, confirm_fn=text_confirm) -> str:
-    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg)) + "\n\n" + registry.build_tool_prompt()
+    system_prompt = build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg), ability_sentence(cfg)) + "\n\n" + registry.build_tool_prompt()
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_text}]
 
     try:
@@ -373,7 +719,8 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
             keep_alive=cfg.get("ollama_keep_alive"),
         )
     except ollama_client.OllamaError as e:
-        return f"(Ollama unavailable: {e})"
+        print(f"[files] model failed: {e}", flush=True)
+        return spoken_fail()
 
     call = None
     native_calls = message.get("tool_calls")
@@ -410,7 +757,8 @@ def handle_files_shell(user_text: str, cfg: dict, mem: MemoryStore, interactive:
             followup, cfg["ollama_model"], cfg["ollama_host"], keep_alive=cfg.get("ollama_keep_alive")
         )
     except ollama_client.OllamaError as e:
-        return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
+        print(f"[files] phrasing failed: {e}", flush=True)
+        return result or spoken_fail()
 
 
 # What Max can actually do, and the plainest phrasing that triggers each.
@@ -427,12 +775,18 @@ CAPABILITIES = [
     ("youtube", "YouTube", "what's on my YouTube"),
     ("googledrive", "Google Drive", "find a file on Google Drive"),
     ("cal", "Cal.com bookings", "what's on cal.com"),
+    ("googlecalendar", "Google Calendar", "what's on my Google Calendar"),
+    ("googletasks", "Google Tasks", "check my task list"),
+    ("linkedin", "LinkedIn", "what's on my LinkedIn"),
+    ("reddit", "Reddit", "what's top on r/technology"),
+    ("chatfai", "ChatFAI fictional characters", "search ChatFAI for Sherlock Holmes"),
     ("spotify", "control Spotify on this Mac", "play some music"),
-    ("vision", "read your whole desktop and teach from the files that are open", "what's on my screen"),
+    ("vision", "see what app you're in, teach you how to do things in it, and point at the button", "what's on my screen"),
     ("browser", "control a browser", "open example.com"),
     ("location", "say the town you're in, weather, and nearby places", "where am I / find restaurants near me"),
     ("calling", "place a phone call", "call this number"),
     ("news", "today's AI, tech, politics, finance or world news", "what's the latest AI news"),
+    ("omdb", "movie and series facts from OMDb", "tell me about the movie Inception"),
 ]
 
 # Which config flag, if any, switches each one off.
@@ -442,7 +796,26 @@ _CAPABILITY_FLAGS = {
     "location": "location_enabled",
     "calling": "calling_enabled",
     "news": "news_enabled",
+    "omdb": "omdb_enabled",
 }
+
+
+def ability_sentence(cfg: dict) -> str:
+    """The tool list as a phrase for the system prompt, config flags applied.
+
+    Same source as handle_capabilities below, so what the model is told it
+    can do and what it says it can do cannot drift apart — and neither can
+    claim a capability that is switched off.
+    """
+    available = [
+        what for key, what, _ in CAPABILITIES
+        if cfg.get(_CAPABILITY_FLAGS.get(key, ""), True)
+    ]
+    if not available:
+        return "nothing right now — every tool is switched off in config"
+    if len(available) == 1:
+        return available[0]
+    return ", ".join(available[:-1]) + f", and {available[-1]}"
 
 
 def handle_model_question(cfg: dict) -> str:
@@ -475,6 +848,153 @@ def handle_capabilities(cfg: dict) -> str:
     return f"I can {listed}. Say what you need."
 
 
+def handle_reminder(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Set a reminder, asking for whatever was not said.
+
+    "Can you set up a reminder?" names neither a subject nor a time, and
+    the only honest reply is a question. Measured live, with no route at
+    all this fell through to the chat model, which announced "I've added a
+    reminder for you on the Google Calendar" — nothing existed. Slots are
+    filled over as many turns as it takes (max/tools/reminder.py); nothing
+    is written until both are known and confirmed.
+    """
+    if not reminder.active() or reminder.is_trigger(user_text):
+        reminder.start()
+    draft = reminder.apply_text(user_text)
+
+    need = reminder.missing()
+    if need == "subject":
+        reminder.note_asked("subject")
+        return "What should I remind you about?"
+    if need == "when":
+        reminder.note_asked("when")
+        return f"When do you want reminding about {draft['subject']}?"
+
+    where = reminder.destination()
+    when_text = reminder.spoken_when()
+    place = "Google Calendar" if where == "calendar" else "Google Tasks"
+    if interactive and not confirm_fn(
+        f'Add "{draft["subject"]}" to {place} for {when_text}?'
+    ):
+        reminder.cancel()
+        return "Dropped it."
+
+    try:
+        composio_client.create_reminder(draft["subject"], draft["when"], draft["has_time"])
+    except (composio_client.ComposioError, llm.LLMError) as e:
+        print(f"[reminder] failed: {e}", flush=True)
+        reminder.cancel()
+        return spoken_fail()
+    reminder.cancel()
+    return f"Done — {draft['subject']}, {when_text}, in {place}."
+
+
+def handle_compose(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
+    """Write something, show it, and type it in only if they say yes.
+
+    The confirmation is unconditional whenever interactive — not gated on
+    tools_confirm_writes, same as the shell tool and for the same reason.
+    Pasting into a document the user is in the middle of writing is a
+    real-world change to their work, and an undo does not fully take it
+    back. Drafting is free and reversible; typing is neither, so they are
+    two separate steps with an explicit yes in between.
+    """
+    kind = compose.detect(user_text)
+    if not kind:
+        return "Tell me what to write — an email, a prompt, a letter, some notes."
+
+    # What is on screen is the subject matter for "write a prompt to review
+    # this code". Best-effort: if the screen can't be read, the request
+    # still gets written from its own words.
+    screen_text, app = "", ""
+    if cfg.get("vision_enabled", True):
+        try:
+            screen_text, app = vision.screen_context()
+        except Exception as e:
+            print(f"[compose] no screen context: {type(e).__name__}: {e}", flush=True)
+
+    try:
+        text = compose.draft(user_text, kind, cfg, screen_text=screen_text, app=app)
+    except compose.ComposeError as e:
+        print(f"[compose] draft failed: {e}", flush=True)
+        return spoken_fail()
+    if not text:
+        return spoken_fail()
+
+    compose.show_draft(text, kind, app=app)
+    compose.remember(text, kind, app)
+    summary = compose.spoken_summary(text, kind)
+
+    where = f" into {app}" if app else ""
+    if interactive and not confirm_fn(f"Type this draft{where}?"):
+        # Kept, not discarded: "no" here usually means "not yet" — they
+        # want to read it, or put the cursor somewhere first. See
+        # handle_compose_insert.
+        return f"{summary} It's on screen — say type it in when you're ready."
+    if not interactive:
+        # No one to ask (a --once run or a scripted turn): never type.
+        return f"{summary} It's on screen; say type it in when you want it."
+    return _insert_draft(text, summary)
+
+
+def _insert_draft(text: str, summary: str) -> str:
+    try:
+        compose.insert(text)
+    except Exception as e:
+        print(f"[compose] insert failed: {type(e).__name__}: {e}", flush=True)
+        return f"{summary} I couldn't type it in — it's on screen to copy."
+    compose.clear_pending()
+    return f"{summary} Typed it in.".strip()
+
+
+def handle_compose_insert(cfg: dict) -> str:
+    """"Type it in" for a draft that is already written and on screen.
+
+    The instruction itself is the consent, so this does not ask again —
+    asking twice for the same yes is how a confirmation stops meaning
+    anything.
+    """
+    draft = compose.pending()
+    if not draft:
+        return "I don't have a draft waiting. Tell me what to write."
+    return _insert_draft(draft["text"], "")
+
+
+def handle_screen_region(user_text: str, cfg: dict, interactive: bool = False,
+                         confirm_fn=text_confirm) -> str:
+    """Circle an area, then answer about only that."""
+    if not cfg.get("vision_enabled", True):
+        return "Screen understanding is disabled in config."
+    try:
+        return vision.describe_region(user_text, cfg, interactive=interactive,
+                                      confirm_fn=confirm_fn)
+    except vision.VisionError as e:
+        print(f"[screen] region failed: {e}", flush=True)
+        return spoken_fail("screen")
+
+
+def handle_screen_howto(user_text: str, cfg: dict) -> str:
+    """"How do I bold this?" — teach the task in the app already on screen."""
+    if not cfg.get("vision_enabled", True):
+        return "Screen understanding is disabled in config."
+    try:
+        return vision.explain_howto(user_text, cfg)
+    except vision.VisionError as e:
+        print(f"[screen] howto failed: {e}", flush=True)
+        return spoken_fail("screen")
+
+
+def handle_screen_show(cfg: dict) -> str:
+    """"Yes, show me" — put Max's pointer on the control just offered."""
+    if not cfg.get("vision_enabled", True):
+        return "Screen understanding is disabled in config."
+    try:
+        return vision.show_pending(cfg)
+    except vision.VisionError as e:
+        print(f"[screen] show failed: {e}", flush=True)
+        return spoken_fail("screen")
+
+
 def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
                   confirm_fn=text_confirm) -> str:
     """Read-only — same tier as calendar/notes/email reads, no confirm.
@@ -492,7 +1012,8 @@ def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
         return vision.describe_screen(user_text, cfg, interactive=interactive,
                                       confirm_fn=confirm_fn)
     except vision.VisionError as e:
-        return f"(Screen check failed: {e})"
+        print(f"[screen] failed: {e}", flush=True)
+        return spoken_fail("screen")
 
 
 def execute_browser_tool(name: str, arguments: dict, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
@@ -538,7 +1059,7 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
         return "Browser control is disabled in config."
 
     system_prompt = (
-        build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg))
+        build_system_prompt(cfg["user_name"], mem.context_block(), _misheard_names(cfg), ability_sentence(cfg))
         + "\n\n"
         + registry.build_tool_prompt(registry.BROWSER_TOOL_SCHEMAS)
     )
@@ -564,7 +1085,8 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
             keep_alive=cfg.get("ollama_keep_alive"),
         )
     except ollama_client.OllamaError as e:
-        return f"(Ollama unavailable: {e})"
+        print(f"[browser] model failed: {e}", flush=True)
+        return spoken_fail()
 
     call = None
     native_calls = message.get("tool_calls")
@@ -601,7 +1123,99 @@ def handle_browser(user_text: str, cfg: dict, mem: MemoryStore, interactive: boo
             followup, cfg["ollama_model"], cfg["ollama_host"], keep_alive=cfg.get("ollama_keep_alive")
         )
     except ollama_client.OllamaError as e:
-        return f"({call['name']} result: {result}) (Ollama unavailable for final phrasing: {e})"
+        print(f"[browser] phrasing failed: {e}", flush=True)
+        return result or spoken_fail()
+
+
+def _load_assamese_jokes() -> list[str]:
+    try:
+        raw = _ASSAMESE_JOKES_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    chunks: list[str] = []
+    buf: list[str] = []
+    for ln in raw.splitlines():
+        if ln.startswith("#"):
+            continue
+        if ln.strip() == "---":
+            text = "\n".join(buf).strip()
+            if text:
+                chunks.append(text)
+            buf = []
+            continue
+        buf.append(ln)
+    tail = "\n".join(buf).strip()
+    if tail:
+        chunks.append(tail)
+    return chunks
+
+
+def _pick_assamese_joke() -> str | None:
+    global _last_assamese_joke
+    jokes = _load_assamese_jokes()
+    if not jokes:
+        return None
+    if len(jokes) == 1:
+        _last_assamese_joke = jokes[0]
+        return jokes[0]
+    choices = [j for j in jokes if j != _last_assamese_joke] or jokes
+    picked = random.choice(choices)
+    _last_assamese_joke = picked
+    return picked
+
+
+def _wants_assamese_joke(user_text: str, mem: MemoryStore | None) -> bool:
+    if mem and get_conversation_language(mem) == "as-IN":
+        return True
+    if re.search(r"জোক|ধেমালি", user_text or ""):
+        return True
+    return False
+
+
+def handle_joke(user_text: str, cfg: dict, mem: MemoryStore | None = None) -> str:
+    """One joke per ask. Assamese comes from the local pool, not the model."""
+    if _wants_assamese_joke(user_text, mem):
+        joke = _pick_assamese_joke()
+        if joke:
+            return joke
+        return "এতিয়া হাতত জোক নাই। max/memory/assamese_jokes.md ত এটা যোগ কৰা।"
+    adult = bool(re.search(r"\b(adult|dirty|sexy|filthy|rude|nsfw)\b", user_text or "", re.I))
+    system = (
+        "You are Max. The user is an adult named Javed. "
+        "Tell one joke now, in clear English. "
+        + (
+            "They asked for an adult/dirty/sexy joke: make it actually dirty, "
+            "not a schoolyard dodge, not a refusal, not a lecture. "
+            if adult
+            else "A proper joke with a punchline. Dry delivery. "
+        )
+        + "Two to six short spoken sentences. Then stop. "
+        "Never involve anyone under 18. Do not use SMS shorthand."
+    )
+    entry = llm.resolve(cfg, "chat")
+    try:
+        return llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_text},
+            ],
+            entry,
+            cfg,
+            options={"num_predict": 180},
+        )
+    except llm.LLMError as e:
+        print(f"[joke] failed: {e}", flush=True)
+        return spoken_fail()
+
+
+def handle_omdb(user_text: str, cfg: dict) -> str:
+    if not cfg.get("omdb_enabled", True):
+        return "Movie lookup is disabled in config."
+    try:
+        return omdb.describe(user_text)
+    except Exception as e:
+        print(f"[omdb] failed: {type(e).__name__}: {e}", flush=True)
+        return spoken_fail()
 
 
 def handle_news(user_text: str, cfg: dict) -> str:
@@ -615,7 +1229,8 @@ def handle_news(user_text: str, cfg: dict) -> str:
     try:
         block, items = news.briefing_block(topics)
     except news_client.NewsError as e:
-        return f"(News check failed: {e})"
+        print(f"[news] failed: {e}", flush=True)
+        return spoken_fail("news")
     if not items:
         return "I couldn't find any headlines just now."
 
@@ -654,23 +1269,88 @@ def handle_here(cfg: dict) -> str:
     try:
         return location.describe_here()
     except location_client.LocationError as e:
-        return f"(Location check failed: {e})"
+        print(f"[location] here failed: {e}", flush=True)
+        return spoken_fail("location")
 
 
-def handle_weather(cfg: dict, user_text: str = "") -> str:
+def handle_weather(cfg: dict, user_text: str = "", mem: MemoryStore | None = None) -> str:
     """Read-only informational — same tier as calendar/notes/email reads,
     no confirm. Deterministic router match, nothing to extract from the
     phrasing.
     """
     if not cfg.get("location_enabled", True):
         return "Location features are disabled in config."
+    lang = get_conversation_language(mem) if mem else None
     try:
-        return location.describe_weather(include_rain=True, user_text=user_text)
+        return location.describe_weather(
+            include_rain=True, user_text=user_text, language=lang
+        )
     except location_client.LocationError as e:
-        return f"(Weather check failed: {e})"
+        print(f"[location] weather failed: {e}", flush=True)
+        return spoken_fail("weather")
 
 
-def handle_nearby(user_text: str, cfg: dict) -> str:
+def handle_showtimes(user_text: str, cfg: dict, mem: MemoryStore | None = None) -> str:
+    """Nearby halls from Maps, then BookMyShow for the actual board.
+
+    There is no live showtime feed on this machine. Do not say "I can't".
+    """
+    city = ""
+    remote_city = False
+    halls = ""
+    if cfg.get("location_enabled", True):
+        try:
+            # A named city wins over GPS here too — "what's showing in
+            # Guwahati" must not list Jorhat halls. Same fix as
+            # handle_nearby; this path had the identical bug.
+            origin, remote_city = location.search_origin(user_text)
+            loc = origin or location_client.get_location()
+            city = (loc.get("city") or "").strip()
+            results = location_client.search_nearby(
+                loc["lat"], loc["lon"], "movie_theater", radius_m=12000
+            )
+            names = [r.get("name", "").strip() for r in results if r.get("name")]
+            if names:
+                halls = ", ".join(names[:3])
+                location.remember_places(names)
+        except Exception as e:
+            print(f"[showtimes] nearby failed: {type(e).__name__}: {e}", flush=True)
+
+    as_in = bool(mem and get_conversation_language(mem) == "as-IN")
+    where = city or "your town"
+    if as_in:
+        where_as = location._as_city(city) if city else "তোমাৰ চহৰ"
+        if halls:
+            return (
+                f"ওচৰত {halls} আছে। কোনখন ছবি কেতিয়া চলিছে সেই ব’ৰ্ড "
+                f"BookMyShow-ত চাবা — {where_as} বাছনি কৰি আজিৰ শ্ব’ খুলিবা।"
+            )
+        return (
+            f"চিনেমাৰ শ্ব’ টাইম ইয়াত লাইভ নাহে। BookMyShow খুলি {where_as} "
+            "বাছনি কৰা — আজি কোনখন ছবি চলিছে তাতেই পাম।"
+        )
+    if halls:
+        # "Nearest" is only true when the halls are near them.
+        lead = f"In {city}, there's {halls}" if remote_city else f"Nearest are {halls}"
+        return (
+            f"{lead}. Today's board isn't on Maps — "
+            f"open BookMyShow, pick {where}, and you'll see what's on and when."
+        )
+    return (
+        f"Showtimes aren't on the Maps feed. Open BookMyShow, choose {where}, "
+        "and you'll get today's films and times."
+    )
+
+
+# Review sites Max is asked for by name but cannot query. STT renders
+# TripAdvisor freely ("TrivatripAdvisor" came through live).
+_OTHER_PLACES_SOURCE_RE = re.compile(
+    r"\b(?:trip\s?advisor|tripadvisor|trivatrip\w*|yelp|zomato|booking\.com|makemytrip)\b",
+    re.IGNORECASE,
+)
+
+
+def handle_nearby(user_text: str, cfg: dict, mem: MemoryStore | None = None) -> str:
     """Read-only informational, no confirm. Category is a plain keyword
     lookup (location.detect_category) over a small fixed vocabulary, not
     LLM extraction — see router.py's NEARBY_PATTERNS comment for why.
@@ -678,14 +1358,44 @@ def handle_nearby(user_text: str, cfg: dict) -> str:
     if not cfg.get("location_enabled", True):
         return "Location features are disabled in config."
     category = location.detect_category(user_text)
-    if not category:
-        known = ", ".join(sorted(location_client.CATEGORY_TAGS))
-        return f"I couldn't tell what you're looking for — I can search for: {known}."
+    named = location.extract_nearby_name(user_text)
     radius = cfg.get("location_default_radius_m", 3000)
+    lang = get_conversation_language(mem) if mem else None
     try:
-        return location.describe_nearby(category, radius_m=radius)
+        # A city named in the request wins over GPS — "hotels in Guwahati"
+        # asked from Jorhat must not answer with Jorhat hotels.
+        origin, remote = location.search_origin(user_text)
+        # Naming a source Max cannot reach deserves an answer, not
+        # silence: TripAdvisor is blocked (see composio_client's
+        # BLOCKED_TOOLKITS — the model invented TRIP_ADVISOR_SEARCH
+        # results once), so say where the list actually came from.
+        source_note = ""
+        if _OTHER_PLACES_SOURCE_RE.search(user_text):
+            source_note = " This is from Google Maps — I'm not connected to TripAdvisor."
+        if named and not category:
+            return location.describe_named_nearby(named, language=lang,
+                                                  origin=origin, remote=remote) + source_note
+        if category:
+            return location.describe_nearby(category, radius_m=radius, language=lang,
+                                            origin=origin, remote=remote) + source_note
+        return location.describe_text_search(user_text, language=lang,
+                                             origin=origin, remote=remote) + source_note
+    except (location_client.LocationError, maps_client.MapsError) as e:
+        print(f"[location] nearby failed: {e}", flush=True)
+        return spoken_fail("nearby")
+
+
+def handle_distance(user_text: str, cfg: dict) -> str:
+    if not cfg.get("location_enabled", True):
+        return "Location features are disabled in config."
+    dest = location.extract_distance_dest(user_text)
+    if not dest:
+        return "Where to? Name the place and I'll check Google Maps."
+    try:
+        return location.describe_distance(dest)
     except location_client.LocationError as e:
-        return f"(Nearby search failed: {e})"
+        print(f"[location] distance failed: {e}", flush=True)
+        return spoken_fail("nearby")
 
 
 def handle_open_maps(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
@@ -720,8 +1430,63 @@ def handle_open_maps(user_text: str, cfg: dict, interactive: bool, confirm_fn=te
     try:
         subprocess.run(["open", url], capture_output=True, timeout=10)
     except (subprocess.TimeoutExpired, OSError) as e:
-        return f"(Could not open Maps: {e})"
+        print(f"[location] open maps failed: {e}", flush=True)
+        return spoken_fail("maps")
     return f'Opened Apple Maps for "{query}".' if query else "Opened Apple Maps near your current location."
+
+
+def handle_phone_lookup(user_text: str, cfg: dict) -> str:
+    """Say a business's phone number. Looks it up; never dials, never guesses.
+
+    Split from handle_call because asking for a number is not asking to
+    ring it, and because the answer must come from Maps rather than from
+    a model — see router.PHONE_LOOKUP_PATTERNS for the invented number
+    this replaces.
+    """
+    if not cfg.get("location_enabled", True):
+        return "Location features are disabled in config."
+    target = (calling.extract_number_target(user_text)
+              or calling.extract_call_target(user_text)
+              or location.extract_nearby_name(user_text))
+    if not target:
+        remembered = location.last_places()
+        if len(remembered) == 1:
+            target = remembered[0]
+        elif remembered:
+            return f"Which one — {', '.join(remembered[:4])}?"
+        else:
+            return "Whose number do you want?"
+    matched = location.match_remembered_place(target)
+    if matched:
+        target = matched
+    try:
+        # "the number for Novotel in Guwahati" must search Guwahati. The
+        # distance cap inside find_phone is measured from whichever
+        # origin it is given, so a named city moves the whole search
+        # rather than widening a Jorhat one.
+        origin, remote = location.search_origin(user_text)
+        here = origin or location_client.get_location()
+        place = location_client.find_phone(
+            target, here["lat"], here["lon"], here.get("city") or ""
+        )
+        if not place:
+            place = maps_client.find_phone(target, here["lat"], here["lon"])
+    except (location_client.LocationError, maps_client.MapsError) as e:
+        print(f"[phone] lookup failed: {e}", flush=True)
+        return spoken_fail("lookup")
+    if not place:
+        # Saying so is the whole point. The alternative is what happened
+        # before: a confident, invented number.
+        where_not = f"in {here.get('city')}" if remote else "near you"
+        return f"I couldn't find a listed number for {target} {where_not}."
+    if remote:
+        # Distance from a city centre the user is not standing in is not
+        # information they can use.
+        return (f"{place['name']} in {here.get('city')}: {place['phone']}. "
+                "Say call them if you want me to dial it.")
+    km = place["distance_m"] / 1000
+    where = f"{km:.1f} km away" if km >= 0.1 else "just nearby"
+    return f"{place['name']}, {where}: {place['phone']}. Say call them if you want me to dial it."
 
 
 def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
@@ -770,9 +1535,21 @@ def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_co
 
         try:
             here = location_client.get_location()
-            place = maps_client.find_phone(target, here["lat"], here["lon"])
+            # Google first — it is the same provider that produced the
+            # nearby list this name almost certainly came from, so the
+            # place Max dials is the place it named. Apple MapKit is the
+            # fallback for when Google has no number on file.
+            place = location_client.find_phone(
+                target, here["lat"], here["lon"], here.get("city") or "")
+            if not place:
+                fallback = maps_client.find_phone(target, here["lat"], here["lon"])
+                # Same guard as the Google path: MapKit will also hand
+                # back a real business that is not the one asked for.
+                if fallback and location_client.name_matches(target, fallback.get("name", "")):
+                    place = fallback
         except (location_client.LocationError, maps_client.MapsError) as e:
-            return f"(Couldn't look that up: {e})"
+            print(f"[call] lookup failed: {e}", flush=True)
+            return spoken_fail("lookup")
 
         if not place:
             return (
@@ -790,21 +1567,28 @@ def handle_call(user_text: str, cfg: dict, interactive: bool, confirm_fn=text_co
             )
 
     who = f"{label} on {number}{detail}" if label else number
+    if not calling.facetime_available():
+        app = calling.call_app()
+        return (
+            f"{app} is not available on this Mac, so I cannot hand the "
+            "call to your iPhone. Open the Phone app once, then ask again."
+        )
+    if not calling.iphone_calling_ready():
+        return (
+            f"I have {who}, but this Mac is not set up to call from your iPhone. "
+            "On this Mac: open Phone → Settings → Calls → turn on Calls from iPhone. "
+            "Unlock the iPhone, keep it nearby, then ask again."
+        )
+
     prompt = f"Call {who} from your iPhone?"
     if interactive and not confirm_fn(prompt):
         return "Cancelled — call not placed."
 
-    if not calling.facetime_available():
-        return (
-            "FaceTime is not available on this Mac, so I cannot hand the "
-            "call to your iPhone. Open FaceTime once, sign in with the same "
-            "Apple ID as the iPhone, then ask again."
-        )
-
     try:
         return calling.call_number(number, label)
     except calling.CallingError as e:
-        return f"(Call failed: {e})"
+        print(f"[call] failed: {e}", flush=True)
+        return spoken_fail("call")
 
 
 def handle_tool(
@@ -817,7 +1601,25 @@ def handle_tool(
                 days = 7 if "week" in lowered else (2 if "tomorrow" in lowered else 1)
                 return calendar.list_events(days=days)
 
-            title, start, duration = parsing.extract_event(user_text)
+            # A time was never said. Ask for it instead of rounding up to
+            # the next hour and offering that as though it were the
+            # request — see max/tools/event_draft.py for what that cost.
+            if event_draft.active():
+                if event_draft.wants_cancel(user_text):
+                    event_draft.cancel()
+                    return "Dropped it."
+                start = event_draft.apply_time(user_text)
+                if start is None:
+                    return event_draft.question()
+                title, duration = event_draft.title(), event_draft.duration()
+                event_draft.cancel()
+            else:
+                title, start, duration = parsing.extract_event(user_text)
+                if not parsing.event_has_time(user_text):
+                    event_draft.start(title, duration)
+                    event_draft.note_asked()
+                    return event_draft.question()
+
             end = start + duration
             when = start.strftime("%a %b %d, %I:%M %p")
             if not _confirm_write(interactive, cfg, f'Add "{title}" to your calendar for {when}?', confirm_fn):
@@ -843,13 +1645,21 @@ def handle_tool(
         if domain == "email":
             return handle_email(user_text, cfg, action, interactive, confirm_fn)
 
-        if domain in ("github", "youtube", "googledrive", "cal"):
+        if domain in ("github", "youtube", "googledrive", "cal", "chatfai",
+                      "googlecalendar", "googletasks", "linkedin", "reddit"):
             return handle_composio(user_text, cfg, domain=domain, action=action)
+
+        if domain == "voice":
+            return handle_voice_volume(action)
 
         if domain == "spotify":
             if action == "read":
                 return handle_spotify(user_text, cfg)
-            return handle_spotify_control(action, user_text)
+            answer = handle_spotify_control(action, user_text)
+            # Music is now the subject, so the next bare fragment is a
+            # song rather than something for the chat model.
+            spotify.note_music_turn()
+            return answer
 
         if domain == "shell":
             return handle_shell(user_text, cfg, interactive, confirm_fn)
@@ -862,7 +1672,21 @@ def handle_tool(
                 return handle_model_question(cfg)
             return handle_capabilities(cfg)
 
+        if domain == "reminder":
+            return handle_reminder(user_text, cfg, interactive, confirm_fn)
+
+        if domain == "compose":
+            if action == "insert":
+                return handle_compose_insert(cfg)
+            return handle_compose(user_text, cfg, interactive, confirm_fn)
+
         if domain == "screen":
+            if action == "region":
+                return handle_screen_region(user_text, cfg, interactive, confirm_fn)
+            if action == "howto":
+                return handle_screen_howto(user_text, cfg)
+            if action == "show":
+                return handle_screen_show(cfg)
             return handle_screen(user_text, cfg, interactive, confirm_fn)
 
         if domain == "browser":
@@ -872,16 +1696,28 @@ def handle_tool(
             if action == "here":
                 return handle_here(cfg)
             if action == "weather":
-                return handle_weather(cfg, user_text)
+                return handle_weather(cfg, user_text, mem)
+            if action == "showtimes":
+                return handle_showtimes(user_text, cfg, mem)
             if action == "nearby":
-                return handle_nearby(user_text, cfg)
+                return handle_nearby(user_text, cfg, mem)
+            if action == "distance":
+                return handle_distance(user_text, cfg)
             if action == "open_maps":
                 return handle_open_maps(user_text, cfg, interactive, confirm_fn)
 
         if domain == "news":
             return handle_news(user_text, cfg)
 
+        if domain == "omdb":
+            return handle_omdb(user_text, cfg)
+
+        if domain == "joke":
+            return handle_joke(user_text, cfg, mem)
+
         if domain == "call":
+            if action == "number":
+                return handle_phone_lookup(user_text, cfg)
             return handle_call(user_text, cfg, interactive, confirm_fn)
     except (claude_handoff.Cancelled, shell.Cancelled):
         # Must reach voice_loop.py's own handler around cli.process_turn()
@@ -890,7 +1726,8 @@ def handle_tool(
         # cancellation the user asked for on purpose.
         raise
     except Exception as e:
-        return f"({domain.capitalize()} tool failed: {e})"
+        print(f"[{domain}] tool failed: {type(e).__name__}: {e}", flush=True)
+        return spoken_fail()
 
     return "(Unrecognized tool request.)"
 
@@ -902,7 +1739,15 @@ def handle_tool(
 _ACTION_CLAIM_RE = re.compile(
     r"(?:"
     r"\bi(?:'m| am) (?:now )?(?:playing|calling|diall?ing|emailing|sending|opening|booking|clicking)\b|"
-    r"\bi(?:'ve| have) (?:just )?(?:played|called|dialled|emailed|sent|opened|clicked)\b|"
+    # "added"/"created"/"scheduled"/"set" were missing, and that is
+    # exactly the shape the worst observed lie took: asked for a reminder
+    # with no route to one, the model replied "I've added a reminder for
+    # you on the Google Calendar" and nothing existed. A claim to have
+    # CREATED something is the most damaging kind, because the user stops
+    # tracking the thing themselves.
+    r"\bi(?:'ve| have) (?:just )?(?:played|called|dialled|emailed|sent|opened|clicked|"
+    r"added|created|scheduled|set|saved|booked|made|put)\b|"
+    r"\bi(?:'ve| have) (?:just )?(?:set up|added .{0,20}reminder)\b|"
     r"\bi(?:'ll| will)\b(?!.{0,20}\bhow\b).{0,20}\b(?:play|call|dial|email|send|open|book|ring|click)\b|"
     r"\bas i click\b|"
     r"\bhere,? i(?:'m| am) going to click\b|"
@@ -910,10 +1755,67 @@ _ACTION_CLAIM_RE = re.compile(
     r"\bplaying\b|"
     r"\bcalling (?:them|[A-Z]|\d)|"
     r"\bi(?:'m| am) en route\b|"
-    r"\bon your way\b"
+    r"\bon your way\b|"
+    r"\bsent to\b|"
+    r"\bfrom your gmail\b|"
+    r"\bemail with subject\b|"
+    # A model announcing a tool ran. It learned this format by seeing raw
+    # "REDDIT_GET_R_TOP returned. {json}" in its own history, then invented
+    # LINKEDIN_CHECK_POSTS and TRIP_ADVISOR_SEARCH — neither exists — and
+    # produced fabricated posts and hotel ratings to match. Max never
+    # names a tool slug out loud, so any reply that does is the model
+    # play-acting.
+    r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+){1,}\b\s*(?:returned|responded|says|result)"
     r")",
     re.IGNORECASE,
 )
+
+
+# Questions whose honest answer requires a tool that did NOT run. Reached
+# here, the reply is the chat model's alone, so any specific detail in it
+# was invented. Measured live, all three in one conversation:
+#   "in the next half an hour"  -> "Around 6 PM ... still 70% chance of rain"
+#   "can you find them?"        -> "Café Lune, Brewed Awakenings, the Corner Bistro"
+#   "how does the person look"  -> "long dark hair, wearing a blue jacket"
+# No forecast was fetched, no place was searched, no screen was read. This
+# is worse than a missed route: the user acts on it. A wrong café sends
+# them across town for somewhere that does not exist.
+_NEEDS_TOOL_RE = re.compile(
+    r"\b(?:"
+    r"find (?:me |them|one|some|a )|near(?:by| me| here)|around here|"
+    r"cafe|café|coffee|restaurant|hotel|shop|petrol|pharmacy|atm|"
+    r"forecast|rain|weather|temperature|humidity|"
+    r"on (?:my|the) screen|this (?:picture|photo|image)|look like"
+    r")\b",
+    re.IGNORECASE,
+)
+# The shapes an invented answer takes: a named place, a clock time with a
+# condition, a percentage, or a physical description.
+_INVENTED_DETAIL_RE = re.compile(
+    r"\b\d{1,3}\s*%|"
+    r"\b\d{1,2}\s*(?:am|pm)\b|"
+    r"\b\d{1,2}\s*°|"
+    r"\b(?:wearing|dark hair|blonde|brunette|smiling|jacket|shirt|glasses)\b|"
+    r"\b(?:café|cafe|bistro|restaurant|coffee shop)\b\s*[A-Z]|"
+    r"[A-Z][a-z]+\s+(?:Café|Cafe|Bistro|Coffee|Roasters|Kitchen)\b",
+)
+
+
+def _rewrite_unverifiable_answer(response: str, user_text: str) -> str:
+    """Replace an invented answer with an offer to actually go and look."""
+    if not response or not _INVENTED_DETAIL_RE.search(response):
+        return response
+    # The subject can live in either half. "In the next half an hour"
+    # names no domain at all, yet the reply that came back was a forecast
+    # — so the reply is checked too, not just the question.
+    if not (_NEEDS_TOOL_RE.search(user_text or "") or _NEEDS_TOOL_RE.search(response)):
+        return response
+    both = f"{user_text or ''} {response}".lower()
+    if any(w in both for w in ("screen", "picture", "photo", "image", "look like", "wearing")):
+        return "I'd be guessing — I haven't looked. Want me to read your screen?"
+    if any(w in both for w in ("weather", "rain", "forecast", "temperature", "humidity")):
+        return "I haven't checked the forecast, so I won't guess at it. Want me to pull it up?"
+    return "I don't want to invent places. Tell me what you're after and I'll search nearby."
 
 
 def _rewrite_false_action_claim(response: str, user_text: str) -> str:
@@ -921,20 +1823,59 @@ def _rewrite_false_action_claim(response: str, user_text: str) -> str:
         return response
     lowered = (user_text or "").lower()
     claimed = response.lower()
+    # Written as something a person would say. The job here is only to
+    # stop Max claiming it did something it did not — it is NOT to explain
+    # the routing. The old wording ("the request never reached the tool.
+    # Say: play <song> on Spotify.") described Max's own plumbing to
+    # someone who just wanted a song, and reads like an error message
+    # because that is what it was.
     if any(w in lowered for w in ("play", "song", "spotify", "track", "bile", "ply")) or "playing" in claimed:
-        hint = "Say: play <song> on Spotify."
-    elif any(w in lowered for w in ("call", "dial", "ring", "phone")) or "calling" in claimed:
-        hint = "Say the place name or the number, e.g. 'call Nova'."
-    elif any(w in lowered for w in ("email", "inbox", "gmail", "mail")):
-        hint = "Say: check my email."
-    elif any(w in lowered for w in ("click", "button", "tab", "pull request", "screen")) or "click" in claimed:
-        hint = "Say: show me where that is — I'll point at it. I don't click for you."
-    else:
-        hint = "Say the action in plainer words and I'll route it."
-    return (
-        "I didn't actually do that — the request never reached the tool. " + hint
-    )
+        return "I didn't catch the song. What do you want me to play?"
+    if any(w in lowered for w in ("call", "dial", "ring", "phone")) or "calling" in claimed:
+        return "I didn't catch who to call. Say the name or the number."
+    if any(w in lowered for w in ("email", "inbox", "gmail", "mail")):
+        return "I haven't sent anything. Who's it for, and what should it say?"
+    if any(w in lowered for w in ("click", "button", "tab", "pull request", "screen")) or "click" in claimed:
+        return "I can point at it, but I don't click. Want me to show you where it is?"
+    return "I haven't done that yet. Say it once more?"
 
+
+# Questions about what is actually ON the screen, asked while a screen
+# session is open. Seen live: after Max correctly said "This is a picture
+# open in Photos", the follow-up "I want to know how the person look like"
+# matched no pattern, fell through to the chat model, and came back "She's
+# a woman with long dark hair, wearing a blue jacket" — a confident
+# description of a photo nothing had looked at. Anything asking about the
+# CONTENT of the screen has to reach the screen, not a language model
+# working from the previous sentence.
+_SCREEN_CONTENT_QUESTION_RE = re.compile(
+    r"\b(?:"
+    r"how (?:does|do|did) (?:it|this|that|the \w+|he|she|they) look|"
+    r"how (?:the )?\w+ looks?(?: like)?|"
+    r"what does (?:it|this|that|the \w+) say|"
+    r"who(?:'s| is| are)? (?:in )?(?:it|this|that|the (?:picture|photo|image|screen))|"
+    r"describe (?:it|this|that|the (?:picture|photo|image|screen))|"
+    r"read (?:it|this|that|the (?:screen|page|text))|"
+    r"what(?:'s| is)? (?:in|on) (?:it|this|that|the (?:picture|photo|image|screen))|"
+    r"what (?:can you |do you )?see"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# A bare "what is this?" — only meaningful while a screen session is open.
+_BARE_WHAT_IS_THIS_RE = re.compile(
+    r"^\s*(?:hey\s+max[,\s]*)?(?:so\s+)?what(?:'s| is| are)?\s+(?:this|that|these)"
+    r"(?:\s+(?:one|thing|here|about))?\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+
+# "I'm finished with that" — closes the on-screen instruction panel.
+# Anchored to whole words so "no" inside "notes" doesn't dismiss it.
+_DONE_WITH_IT_RE = re.compile(
+    r"\b(?:no|nope|not now|i see it|found it|got it|that'?s all|that'?s it|"
+    r"all good|done|thanks|thank you|close (?:it|that|the panel))\b",
+    re.IGNORECASE,
+)
 
 CONVERSATION_LANGUAGE_KEY = "conversation_language"
 _ASSAMESE_SCRIPT_RE = re.compile(r"[\u0980-\u09FF]")
@@ -949,10 +1890,12 @@ _HINDI_TRIGGER_RE = re.compile(
 )
 _ASSAMESE_TRIGGER_RE = re.compile(
     r"\b(?:in\s+assamese|assamese\s+mein|"
-    r"speak\s+(?:in\s+)?(?:assamese|asamese|asamiya|axomiya|oxomiya|asmiz|asmus|achomiah|asomiya|asomiya)|"
+    r"speak(?:ing)?\s+(?:in\s+)?(?:assamese|asamese|asamiya|axomiya|oxomiya|asmiz|asmus|achomiah|asomiya|asme|asmes|asthma)|"
     r"talk\s+(?:to\s+me\s+)?(?:in\s+)?(?:assamese|asamese|asamiya|axomiya|oxomiya)|"
     r"switch\s+to\s+(?:assamese|asamese|asamiya|axomiya|oxomiya)|"
-    r"axomiya|oxomiya|asamiya|achomiah|asomiya)\b|অসমীয়া|"
+    r"(?:asme'?s?|asmes|asthma)\s+language|"
+    r"axomiya|oxomiya|asamiya|achomiah|asomiya|asme'?s?|asthma)\b|অসমীয়া|"
+    r"\bassamese\b|"
     r"^(?:assamese|asamese)[?.!]*$",
     re.IGNORECASE,
 )
@@ -968,7 +1911,7 @@ _ENGLISH_TRIGGER_RE = re.compile(
 )
 _LANG_LEFTOVER_RE = re.compile(
     r"^(?:hey\s+)?(?:\w+[,\s]+)*(?:please\s+)?(?:can|could|would)\s+you\s*(?:please)?\s*[?.!]*$"
-    r"|^(?:please|now|right\s+now|okay|ok)[?.!]*$",
+    r"|^(?:please|now|right\s+now|okay|ok|i want you to|i want to)[?.!]*$",
     re.IGNORECASE,
 )
 _LANG_FILLER_RE = re.compile(
@@ -1085,10 +2028,101 @@ def process_turn(
 
     tool_match = None if forced else router.detect_tool(clean_text)
 
+    # An open email draft owns follow-ups ("GST", "yes", "headlines") so
+    # they cannot fall through to news or a leftover Spotify play.
+    if not forced and email_compose.active():
+        if email_compose.is_topic_change(clean_text):
+            email_compose.cancel()
+        elif tool_match is None or tool_match[0] == "news":
+            tool_match = ("email", "write")
+        elif tool_match[0] == "spotify" and not parsing.has_song_trigger(clean_text):
+            tool_match = ("email", "write")
+        elif tool_match[0] == "email":
+            # A draft is open — "D-Read Gmail.com" must not flip to inbox read.
+            tool_match = ("email", "write")
+        else:
+            email_compose.cancel()
+
+    # An open reminder owns the next answers. Max asked "what should I
+    # remind you about?" — the reply IS the subject, and it will match no
+    # router pattern at all. Without this the answers fell through to the
+    # chat model, which then claimed the reminder was set. Same shape as
+    # the open email draft below.
+    if not forced and reminder.active():
+        if reminder.wants_cancel(clean_text):
+            reminder.cancel()
+            return "ollama", "Dropped it."
+        if tool_match is None or tool_match[0] in ("calendar", "googlecalendar", "googletasks"):
+            tool_match = ("reminder", "auto")
+
+    # An event waiting on its time owns the next answer. "tomorrow at 1pm"
+    # is a bare time phrase that matches no router pattern, so without
+    # this it fell through to the chat model and the event was lost. Same
+    # shape as the open reminder above.
+    if not forced and event_draft.active():
+        if event_draft.wants_cancel(clean_text):
+            event_draft.cancel()
+            return "ollama", "Dropped it."
+        if tool_match is None or tool_match[0] in ("calendar", "googlecalendar"):
+            tool_match = ("calendar", "write")
+
+    # A written-but-not-typed draft owns "type it in" / "go ahead". Same
+    # shape as the pending Spotify play and the pending screen pointer
+    # below: the router is stateless, so the fact that a draft is waiting
+    # lives here.
+    if not forced and tool_match is None and compose.has_pending() and compose.wants_insert(clean_text):
+        tool_match = ("compose", "insert")
+
+    # An open teaching session owns follow-ups. Router patterns are
+    # stateless, so "how do I bold this?" and a bare "yes" carry no clue
+    # that they are about the Word window Max just named — that context
+    # lives here, the same way an open email draft and a pending Spotify
+    # query already claim their own follow-ups above and below.
+    if not forced and vision.session_active():
+        if vision.has_pending_show() and parsing.is_affirmation(clean_text):
+            # "Yes" right after "want me to show you where it is?"
+            tool_match = ("screen", "show")
+        else:
+            # Done with it — take the instruction off their screen rather
+            # than leaving it there until a timer notices. Deliberately
+            # NOT gated on there being a pending offer: the panel is up
+            # whenever Max has taught something, whether or not it also
+            # offered to point, and "got it" means the same either way.
+            # This only dismisses; the turn itself still routes normally.
+            if _DONE_WITH_IT_RE.search(clean_text):
+                vision.clear_pending_show()
+                vision.dismiss_panel()
+            if tool_match is None and _SCREEN_CONTENT_QUESTION_RE.search(clean_text):
+                # "How does the person look?" — about the screen, and only
+                # the screen can answer it. See the pattern for what the
+                # chat model said when this fell through to it.
+                tool_match = ("screen", "read")
+            elif tool_match is None and _BARE_WHAT_IS_THIS_RE.match(clean_text):
+                # "What is this?" with a screen conversation already open
+                # means the thing on screen. Seen live: it fell through to
+                # chat, which answered from the previous reply still in
+                # context rather than from the screen — a guess dressed as
+                # an observation. Needs the session, so a cold "what is
+                # this?" is still ordinary conversation.
+                tool_match = ("screen", "read")
+            elif tool_match is None and vision.is_howto(clean_text):
+                # "How do I bold this?" with no app named — it's the app
+                # on screen. Only claimed when nothing else matched, so
+                # "how do I play music" still reaches Spotify.
+                tool_match = ("screen", "howto")
+
+    # While music is the live subject, a bare fragment is a song. STT
+    # loses titles far more than artists, so the follow-up is regularly
+    # just "by Metallica" — which matched nothing, reached the chat model,
+    # and came back "I can't play Spotify here. Say 'play <song> by
+    # <artist> on Spotify'". A refusal, a recitation of syntax, and untrue.
+    if not forced and tool_match is None and spotify.looks_like_followup(clean_text):
+        tool_match = ("spotify", "play_track")
+
     # Remember a named song even when this turn doesn't play it, so a
     # follow-up "yes" / "play it" can. And if the user just said "yes"
     # after such a miss, send it to Spotify instead of letting the model
-    # claim it is playing.
+    # claim it is playing. Only an explicit play verb may arm that.
     if not forced:
         if (
             tool_match is None
@@ -1097,15 +2131,12 @@ def process_turn(
         ):
             tool_match = ("spotify", "play_track")
             clean_text = spotify.last_query() or clean_text
-        else:
+        elif parsing.has_song_trigger(clean_text):
             maybe_song = parsing.extract_song_query(clean_text)
-            named = parsing.split_song_artist(maybe_song)[1]
-            if (
-                maybe_song
-                and not parsing.is_referential_song_query(maybe_song)
-                and (parsing.has_song_trigger(clean_text) or named)
-            ):
+            if maybe_song and not parsing.is_referential_song_query(maybe_song):
                 spotify.remember_query(maybe_song)
+        elif not (tool_match and tool_match[0] == "spotify"):
+            spotify.clear_pending_play()
 
     if tool_match:
         domain, action = tool_match
@@ -1137,11 +2168,13 @@ def process_turn(
             if used and not model_override:
                 backend = llm.backend_name(used)
             response = _rewrite_false_action_claim(response, clean_text)
+            response = _rewrite_unverifiable_answer(response, clean_text)
 
     # Empty user text is a language switch leftover ("speak Assamese"
     # with nothing after). Logging it as "" poisons the next Sarvam call.
-    if (clean_text or "").strip():
-        mem.log_turn("user", clean_text, backend, source=source)
+    shown = wake_phrase.strip_address_name(clean_text or "")
+    if shown.strip():
+        mem.log_turn("user", shown, backend, source=source)
     mem.log_turn("assistant", response, backend, source=source)
     # Learn from what just happened. Returns immediately — the distilling
     # runs on a background thread, after the reply is already on its way,
@@ -1183,6 +2216,22 @@ def label(backend: str) -> str:
         return "[Call]"
     if backend == "tools:news":
         return "[News]"
+    # These five were missing, so a deterministic tool answer was labelled
+    # "[Max]" — crediting the chat model for a line it never wrote.
+    if backend == "tools:omdb":
+        return "[Movies]"
+    if backend == "tools:joke":
+        return "[Joke]"
+    if backend == "tools:voice":
+        return "[Voice]"
+    if backend == "tools:capabilities":
+        return "[Max]"
+    if backend == "tools:chatfai":
+        return "[ChatFAI]"
+    if backend == "tools:compose":
+        return "[Draft]"
+    if backend == "tools:reminder":
+        return "[Reminder]"
     if backend == "sarvam:hi-IN":
         return "[Sarvam Hindi]"
     if backend == "sarvam:as-IN":

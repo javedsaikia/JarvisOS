@@ -89,7 +89,7 @@ def search_places(
     if not finished.is_set():
         raise MapsError("Map lookup timed out.")
     if result.get("error") is not None:
-        raise MapsError(str(result["error"].localizedDescription()))
+        raise MapsError("lookup failed")
 
     response = result.get("response")
     if response is None:

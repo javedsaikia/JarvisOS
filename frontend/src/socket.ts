@@ -27,6 +27,7 @@ export type ServerMessage =
   // loop confirming it really opened or closed the device.
   | { type: "mic_requested"; muted: boolean }
   | { type: "mic_state"; muted: boolean }
+  | { type: "tts_volume"; level: number }
   // The model catalog and which model answers for each job. Sent on
   // connect and after every change, so the picker can't drift from what
   // is actually running.
@@ -39,7 +40,6 @@ export type ServerMessage =
       roles: Record<string, string>;
       role_labels: Record<string, string>;
     }
-  | { type: "memory_state"; facts: string[]; style: string[] }
   | {
       type: "spotify_state";
       active: boolean;
@@ -145,6 +145,10 @@ export class MaxSocket {
 
   setMic(muted: boolean): void {
     this.send({ type: "set_mic", muted });
+  }
+
+  setTtsVolume(level: number): void {
+    this.send({ type: "set_tts_volume", level });
   }
 
   setScreenFeed(enabled: boolean): void {

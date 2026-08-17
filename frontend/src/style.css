@@ -399,15 +399,17 @@ body {
 
 .vision-frame {
   margin: 2px 12px 12px;
-  height: 150px;
+  height: 168px;
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(0, 212, 255, 0.18);
-  border-radius: 4px;
+  border: 1px solid rgba(0, 212, 255, 0.28);
+  border-radius: 2px;
   background:
-    radial-gradient(circle at 50% 50%, rgba(0, 212, 255, 0.12), transparent 58%),
-    linear-gradient(180deg, rgba(0, 20, 38, 0.96), rgba(0, 7, 18, 0.96));
-  box-shadow: inset 0 0 24px rgba(0, 212, 255, 0.08);
+    radial-gradient(circle at 50% 42%, rgba(0, 212, 255, 0.1), transparent 62%),
+    linear-gradient(180deg, rgba(0, 16, 32, 0.98), rgba(0, 6, 16, 0.98));
+  box-shadow:
+    inset 0 0 28px rgba(0, 212, 255, 0.1),
+    0 0 18px rgba(0, 212, 255, 0.08);
 }
 
 .vision-frame::before {
@@ -439,14 +441,62 @@ body {
 .screen-img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  object-position: top center;
+  object-fit: contain;
+  object-position: center;
   display: block;
   opacity: 0;
   transition: opacity 0.35s ease;
-  filter: saturate(1.1) contrast(1.05) brightness(0.92);
+  filter: saturate(1.08) contrast(1.04) brightness(0.94);
+  background: #000;
 }
 .screen-img.visible { opacity: 1; }
+
+.scope-tick {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  z-index: 3;
+  pointer-events: none;
+  border-color: var(--blue);
+  border-style: solid;
+  opacity: 0.85;
+  filter: drop-shadow(0 0 4px var(--blue-dim));
+}
+.scope-tick-tl { top: 5px; left: 5px; border-width: 1.5px 0 0 1.5px; }
+.scope-tick-tr { top: 5px; right: 5px; border-width: 1.5px 1.5px 0 0; }
+.scope-tick-bl { bottom: 5px; left: 5px; border-width: 0 0 1.5px 1.5px; }
+.scope-tick-br { bottom: 5px; right: 5px; border-width: 0 1.5px 1.5px 0; }
+
+.scope-live {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  z-index: 3;
+  display: none;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px 2px 5px;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--teal);
+  background: rgba(0, 8, 16, 0.62);
+  border: 1px solid rgba(44, 232, 184, 0.35);
+}
+.screen-img.visible ~ .scope-live { display: flex; }
+.scope-live-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--teal);
+  box-shadow: 0 0 7px var(--teal);
+  animation: scope-pulse 1.6s ease-in-out infinite;
+}
+@keyframes scope-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+#screen-card.feed-off .scope-live { display: none; }
 
 .screen-placeholder {
   position: absolute;
@@ -718,6 +768,57 @@ body {
   text-align: center;
 }
 .cmd-grid .cmd-label { font-size: 9.5px; letter-spacing: 0.12em; }
+
+.voice-vol {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto auto;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--blue-faint);
+  background: linear-gradient(150deg, rgba(0, 40, 70, 0.35), rgba(0, 16, 34, 0.5));
+}
+.voice-vol-kicker {
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.voice-vol-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--blue-faint);
+  background: rgba(0, 30, 55, 0.7);
+  color: var(--blue-bright);
+  font: 700 14px/1 "Chakra Petch", sans-serif;
+  cursor: pointer;
+}
+.voice-vol-btn:hover { border-color: var(--blue); color: #fff; }
+#tts-volume {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  background: rgba(0, 212, 255, 0.22);
+  outline: none;
+}
+#tts-volume::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--teal);
+  box-shadow: 0 0 8px var(--teal);
+  cursor: pointer;
+}
+.voice-vol-readout {
+  min-width: 2.2em;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px;
+  color: var(--teal);
+  text-align: right;
+}
 
 /* "Off" states: muted audio, screen feed disabled. Reads as a control
    that's deliberately parked, not one that's broken or unavailable. */
@@ -1254,42 +1355,6 @@ html[data-capturing="off"] #app > * { transition: opacity 0.35s ease 0.1s; }
   gap: 6px;
   padding: 4px 12px 12px;
 }
-
-#memory-facts {
-  list-style: none;
-  margin: 0;
-  padding: 4px 12px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: 148px;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: var(--blue-dim) transparent;
-}
-#memory-facts li {
-  position: relative;
-  padding-left: 10px;
-  font-size: 10.5px;
-  line-height: 1.4;
-  color: var(--text);
-}
-#memory-facts li::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0.55em;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--blue);
-  box-shadow: 0 0 6px var(--blue);
-}
-#memory-facts .memory-empty {
-  color: var(--text-dim);
-  padding-left: 0;
-}
-#memory-facts .memory-empty::before { display: none; }
 
 .model-row {
   display: flex;

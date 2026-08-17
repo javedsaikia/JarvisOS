@@ -5,6 +5,7 @@
 export class AudioPlayer {
   private ctx: AudioContext;
   private analyser: AnalyserNode;
+  private gain: GainNode;
   private dataArray: Uint8Array<ArrayBuffer>;
   private waveArray: Uint8Array<ArrayBuffer>;
   private source: AudioBufferSourceNode | null = null;
@@ -25,8 +26,18 @@ export class AudioPlayer {
     this.analyser = this.ctx.createAnalyser();
     this.analyser.fftSize = 256;
     this.analyser.smoothingTimeConstant = 0.6;
+    this.gain = this.ctx.createGain();
+    this.gain.gain.value = 0.35;
+    this.analyser.connect(this.gain);
+    this.gain.connect(this.ctx.destination);
     this.dataArray = new Uint8Array(new ArrayBuffer(this.analyser.frequencyBinCount));
     this.waveArray = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
+  }
+
+  /** Digital gain for HUD-played TTS, 5–100. Same scale as Max's afplay. */
+  setVolume(level: number): void {
+    const pct = Math.max(5, Math.min(100, level));
+    this.gain.gain.value = pct / 100;
   }
 
   // --- Accessors for the HUD visualizers. These expose the SAME real
@@ -87,7 +98,6 @@ export class AudioPlayer {
     const source = this.ctx.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
     source.onended = () => {
       this.source = null;
       void this._playNext();

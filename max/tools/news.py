@@ -21,11 +21,6 @@ def detect_topics(text: str) -> list[str]:
     return ["world"]
 
 
-def detect_topic(text: str) -> str:
-    topics = detect_topics(text)
-    return topics[0] if topics else "world"
-
-
 def briefing_block(topics: list[str], per_topic: int = 6) -> tuple[str, list[dict]]:
     """Plain text the model (or a fallback speaker) can use. Raises NewsError."""
     chunks = []

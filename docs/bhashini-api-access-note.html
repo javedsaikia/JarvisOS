@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bhashini API Access — Max (JarvisOS)</title>
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --muted: #4a4a4a;
+      --rule: #c8c8c8;
+      --paper: #f7f4ee;
+      --sheet: #fff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 16px/1.55 "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+    }
+    .bar {
+      position: sticky;
+      top: 0;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      background: #1b2a1e;
+      color: #f3efe6;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      z-index: 2;
+    }
+    .bar button, .bar a.btn {
+      appearance: none;
+      border: 0;
+      background: #e8d7a4;
+      color: #1b2a1e;
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    main {
+      max-width: 760px;
+      margin: 28px auto 64px;
+      background: var(--sheet);
+      padding: 56px 64px;
+      box-shadow: 0 8px 32px rgba(0,0,0,.08);
+    }
+    h1 {
+      font-size: 26px;
+      letter-spacing: .01em;
+      margin: 0 0 6px;
+    }
+    .kicker {
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      font-size: 12px;
+      color: var(--muted);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin-bottom: 8px;
+    }
+    .meta {
+      color: var(--muted);
+      margin: 0 0 28px;
+    }
+    hr { border: 0; border-top: 1px solid var(--rule); margin: 28px 0; }
+    h2 {
+      font-size: 18px;
+      margin: 28px 0 10px;
+    }
+    p, li { margin: 0 0 12px; }
+    ul { padding-left: 1.2em; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 15px;
+      margin: 8px 0 16px;
+    }
+    th, td {
+      border: 1px solid var(--rule);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f3efe6; font-weight: 600; }
+    .sign { margin-top: 36px; }
+    .sign p { margin: 4px 0; }
+    @media print {
+      .bar { display: none; }
+      body { background: #fff; }
+      main { margin: 0; padding: 12mm; box-shadow: none; max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <span>Bhashini access note — Max / JarvisOS</span>
+    <button type="button" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+  <main>
+    <div class="kicker">Application for API access</div>
+    <h1>Bhashini API Access Request</h1>
+    <p class="meta">
+      Product: Max (JarvisOS)<br />
+      Language focus: Assamese (অসমীয়া), with English and other Indian languages later<br />
+      Date: 16 August 2026
+    </p>
+
+    <h2>1. Applicant</h2>
+    <p>
+      <strong>Product name:</strong> Max<br />
+      <strong>Project / organisation:</strong> JarvisOS (independent product; personal-assistant software for macOS)<br />
+      <strong>Applicant:</strong> Javed<br />
+      <strong>Location:</strong> Bengaluru, India<br />
+      <strong>Nature of use:</strong> Integration into a working voice assistant product (not academic research alone, not resale of the API)
+    </p>
+    <p>
+      I am the builder of Max, a local-first personal voice assistant. I speak Assamese as a first language and use the product daily in Assamese and English.
+    </p>
+
+    <h2>2. What the product is</h2>
+    <p>
+      Max is a voice-first personal assistant that runs on the user’s Mac. The user says <strong>“Hey Max”</strong> or <strong>“Max”</strong>, speaks a request, and Max replies by voice.
+    </p>
+    <p>It is meant to do ordinary daily work in the user’s own language, including:</p>
+    <ul>
+      <li>conversation and follow-up questions</li>
+      <li>weather, time, and local information</li>
+      <li>calendar, reminders, notes, and email drafts</li>
+      <li>maps and nearby places</li>
+      <li>calls and other device actions the user already permits</li>
+    </ul>
+    <p>
+      Speech is the main interface. Text is secondary. The product only works if it can hear Assamese clearly and speak Assamese clearly. That is why we need Bhashini.
+    </p>
+    <p>
+      Max is designed as a personal tool, not a public website that would expose Bhashini keys or resell language APIs.
+    </p>
+
+    <h2>3. Problem we are solving</h2>
+    <p>
+      A large share of Indian users, including Assamese speakers, do not want to switch to English (or to Hindi/Bengali) to use a voice assistant.
+    </p>
+    <p>Today, most speech APIs either:</p>
+    <ul>
+      <li>do not support Assamese at all, or</li>
+      <li>support Assamese only as a beta / fallback, or</li>
+      <li>treat Assamese as Bengali, which produces the wrong pronunciation and the wrong script behaviour.</li>
+    </ul>
+    <p>
+      We have already built the assistant, the wake word, the tools, and the conversation loop. The missing piece is a reliable, India-built Assamese speech stack:
+    </p>
+    <ol>
+      <li><strong>Speech-to-text (ASR)</strong> — so “Max, আজি বতৰ কেনে?” is understood as Assamese, not as broken English.</li>
+      <li><strong>Text-to-speech (TTS)</strong> — so the reply is spoken in a natural Assamese voice, not a neighbouring language’s voice reading Assamese letters.</li>
+      <li><strong>Optional translation / transliteration</strong> — only when the user mixes English and Assamese, or when a tool result arrives in English and must be spoken in Assamese.</li>
+    </ol>
+    <p>
+      Without this, Assamese users cannot use the product as a first-class voice assistant. That is the gap Bhashini is meant to close.
+    </p>
+
+    <h2>4. Use case (why we need Bhashini)</h2>
+    <p><strong>Primary use case:</strong> real-time Assamese voice conversation with a personal assistant.</p>
+    <p>Typical turn:</p>
+    <ol>
+      <li>User speaks Assamese (or mixed Assamese–English) after “Hey Max” / “Max”.</li>
+      <li><strong>Bhashini ASR</strong> transcribes the utterance in Assamese script.</li>
+      <li>Max decides what to do (answer, look up weather, draft a mail, find a place, and so on).</li>
+      <li><strong>Bhashini TTS</strong> speaks a short Assamese reply (usually two to four sentences).</li>
+    </ol>
+    <p>Examples of real requests the product already handles, which we want to run fully in Assamese:</p>
+    <table>
+      <thead>
+        <tr>
+          <th>User intent</th>
+          <th>Example (Assamese)</th>
+          <th>Bhashini role</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Everyday talk</td>
+          <td>কি খবৰ? আজি ব্যস্ত নেকি?</td>
+          <td>ASR + TTS</td>
+        </tr>
+        <tr>
+          <td>Weather / time</td>
+          <td>আজি গুৱাহাটীত বতৰ কেনে?</td>
+          <td>ASR; TTS of the spoken answer</td>
+        </tr>
+        <tr>
+          <td>Local search</td>
+          <td>ওচৰত পেট্ৰল পাম্প ক’ত?</td>
+          <td>ASR of the query; TTS of the result</td>
+        </tr>
+        <tr>
+          <td>Reminders / mail</td>
+          <td>কাইলৈ ১০ বজাত মনত পেলাই দিবা</td>
+          <td>ASR of the instruction; TTS confirmation</td>
+        </tr>
+        <tr>
+          <td>Humour / company</td>
+          <td>এটা জোক কোৱাচোন</td>
+          <td>ASR + TTS of the reply</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      This matches Bhashini’s purpose: digital services in the citizen’s own language, including scheduled and less-resourced languages such as Assamese.
+    </p>
+    <p>
+      We are not asking for Bhashini in order to build a generic translation website, scrape data, or white-label the API. We need it as the Assamese ears and voice of one assistant product.
+    </p>
+
+    <h2>5. Why Bhashini specifically</h2>
+    <ul>
+      <li>Bhashini is the national platform for Indian-language ASR, TTS, and translation.</li>
+      <li>Assamese is an official scheduled language. Support should come from Indian public infrastructure, not from a foreign model that approximates Assamese as Bengali.</li>
+      <li>We need as-IN speech recognition and as-IN speech synthesis as first-class services.</li>
+      <li>Using Bhashini keeps the language layer aligned with Digital India / NLTM rather than depending on a vendor that may withdraw Assamese or keep it in beta.</li>
+    </ul>
+    <p>
+      We already use local models where they work (wake word, English STT, on-device routing). We are requesting Bhashini only for the Indian-language speech path that local English models cannot do well.
+    </p>
+
+    <h2>6. APIs / services requested</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Language</th>
+          <th>How it will be used</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Automatic Speech Recognition (ASR)</td>
+          <td>Assamese (as / as-IN)</td>
+          <td>Transcribe each voice command</td>
+        </tr>
+        <tr>
+          <td>Text-to-Speech (TTS)</td>
+          <td>Assamese</td>
+          <td>Speak Max’s reply</td>
+        </tr>
+        <tr>
+          <td>Translation (optional, later)</td>
+          <td>English ↔ Assamese</td>
+          <td>Speak English tool results in Assamese when needed</td>
+        </tr>
+        <tr>
+          <td>Transliteration (optional)</td>
+          <td>Roman ↔ Assamese</td>
+          <td>Handle romanized Assamese if the user mixes scripts</td>
+        </tr>
+      </tbody>
+    </table>
+    <p><strong>Priority:</strong> ASR + TTS for Assamese. Translation can wait.</p>
+
+    <h2>7. Expected usage (honest scale)</h2>
+    <p>This is a personal / early-product deployment, not a mass consumer launch.</p>
+    <ul>
+      <li>Users at this stage: 1 (developer), then a small private test group</li>
+      <li>Typical load: a few dozen voice turns per day</li>
+      <li>Audio: short commands (a few seconds), not long recordings</li>
+      <li>Replies: short spoken answers, not audiobooks</li>
+    </ul>
+    <p>
+      If the product grows, we will stay within published rate limits and apply for a higher tier rather than hide traffic.
+    </p>
+
+    <h2>8. Data, privacy, and compliance</h2>
+    <ul>
+      <li>Audio is captured only after the user addresses Max by name.</li>
+      <li>We will send Bhashini only the utterance needed for that turn (ASR) and the text of the spoken reply (TTS).</li>
+      <li>We will not publish, sell, or sublicense Bhashini outputs or keys.</li>
+      <li>The API key will stay in a private server-side / local environment, not in a public app or web page.</li>
+      <li>We will follow Bhashini’s terms of use, attribution, and any limits on commercial use.</li>
+      <li>No content involving minors, and no use of the API to build a competing language model.</li>
+    </ul>
+
+    <h2>9. Current status and what access unlocks</h2>
+    <p>
+      Max already runs end-to-end on macOS: wake word, tools, memory, and a conversation loop. Assamese chat is implemented, but speech quality is blocked by the lack of a proper Assamese ASR/TTS pipeline.
+    </p>
+    <p>Bhashini access lets us:</p>
+    <ul>
+      <li>understand spoken Assamese accurately</li>
+      <li>reply in a correct Assamese voice</li>
+      <li>treat Assamese users as first-class, not as a fallback of Bengali or English</li>
+    </ul>
+    <p>That is the whole request.</p>
+
+    <h2>10. Request</h2>
+    <p>
+      Please grant API access to Bhashini for the product <strong>Max (JarvisOS)</strong> for <strong>Assamese ASR and Assamese TTS</strong>, for integration into a personal voice assistant used in India.
+    </p>
+    <p>
+      I am ready to provide a demo, screenshots, or a short video of the existing product if required.
+    </p>
+    <p>
+      <strong>Contact:</strong> Javed<br />
+      <strong>Product:</strong> Max / JarvisOS<br />
+      <strong>Email / phone:</strong> <em>add yours before you export the PDF</em>
+    </p>
+
+    <h2>Declaration</h2>
+    <p>
+      I confirm that the information above is true, that the API will be used only for the stated product, and that I will comply with Bhashini’s terms and usage policy.
+    </p>
+    <div class="sign">
+      <p>Signature: ______________________________</p>
+      <p>Name: Javed</p>
+      <p>Date: 16 August 2026</p>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,6 +1,6 @@
 """Push-to-talk and wake hotkeys.
 
-Hold Control+Option to talk, or double-tap Right Command to wake. Both
+Hold Command+Option to talk, or double-tap Right Command to wake. Both
 are modifier-only gestures: they type nothing into the focused app.
 
 macOS does not deliver those as KeyDown/KeyUp. They arrive as
@@ -39,7 +39,31 @@ from Quartz import (
     kCGSessionEventTap,
 )
 
-DEFAULT_COMBO = ("ctrl", "alt")
+try:
+    from Quartz import CGPreflightListenEventAccess, CGRequestListenEventAccess
+except ImportError:  # older macOS
+    CGPreflightListenEventAccess = None
+    CGRequestListenEventAccess = None
+
+try:
+    from Quartz import kCGEventSystemDefined
+except ImportError:
+    kCGEventSystemDefined = 14
+
+try:
+    from AppKit import NSEvent
+except ImportError:
+    NSEvent = None
+
+# Hardware media keys (HIToolbox) and NX_KEYTYPE_* for NSSystemDefined.
+_VK_VOLUME_UP = 0x48
+_VK_VOLUME_DOWN = 0x49
+_NX_KEYTYPE_SOUND_UP = 0
+_NX_KEYTYPE_SOUND_DOWN = 1
+_NX_SUBTYPE_AUX = 8
+_NX_KEY_DOWN = 0x0A
+
+DEFAULT_COMBO = ("cmd", "alt")
 DEFAULT_WAKE_KEY = "cmd_r"
 DEFAULT_WAKE_COMBO = ("ctrl", "alt", "space")
 DOUBLE_TAP_SECONDS = 0.45
@@ -140,7 +164,14 @@ class _FlagTap:
             CGEventMaskBit(kCGEventFlagsChanged)
             | CGEventMaskBit(kCGEventKeyDown)
             | CGEventMaskBit(kCGEventKeyUp)
+            | CGEventMaskBit(int(kCGEventSystemDefined))
         )
+        if CGPreflightListenEventAccess is not None:
+            allowed = bool(CGPreflightListenEventAccess())
+            print(f"  (Input Monitoring preflight: {'granted' if allowed else 'denied'})",
+                  flush=True)
+            if not allowed and CGRequestListenEventAccess is not None:
+                CGRequestListenEventAccess()
         tap = CGEventTapCreate(
             kCGSessionEventTap,
             kCGHeadInsertEventTap,
@@ -151,7 +182,7 @@ class _FlagTap:
         )
         if tap is None:
             print("  (hotkey tap could not be created — grant Input Monitoring "
-                  "to Terminal and Python, then restart from Terminal)")
+                  "to Terminal, then run ./start_max.sh from that Terminal)")
             self._ready.set()
             return
         source = CFMachPortCreateRunLoopSource(None, tap, 0)
@@ -176,6 +207,7 @@ class _FlagTap:
             flags = int(CGEventGetFlags(event))
             vk = int(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode))
             etype = int(event_type)
+            aux = _sound_key(event, etype, vk)
             self.flags = flags
             self.saw_any_event = True
             if not self._logged_first:
@@ -186,7 +218,12 @@ class _FlagTap:
                 subs = list(self._subscribers)
             for cb in subs:
                 try:
-                    cb(etype, vk, flags)
+                    cb(etype, vk, flags, aux)
+                except TypeError:
+                    try:
+                        cb(etype, vk, flags)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
         except Exception:
@@ -194,26 +231,63 @@ class _FlagTap:
         return event
 
 
+def _sound_key(event, etype, vk) -> str | None:
+    """'up' / 'down' for the Mac or EarPods volume keys, else None."""
+    if vk == _VK_VOLUME_UP:
+        return "up"
+    if vk == _VK_VOLUME_DOWN:
+        return "down"
+    if NSEvent is None or etype != int(kCGEventSystemDefined):
+        return None
+    try:
+        nse = NSEvent.eventWithCGEvent_(event)
+        if nse is None or int(nse.subtype()) != _NX_SUBTYPE_AUX:
+            return None
+        data1 = int(nse.data1())
+        key = (data1 & 0xFFFF0000) >> 16
+        state = (data1 & 0x0000FF00) >> 8
+        if state != _NX_KEY_DOWN:
+            return None
+        if key == _NX_KEYTYPE_SOUND_UP:
+            return "up"
+        if key == _NX_KEYTYPE_SOUND_DOWN:
+            return "down"
+    except Exception:
+        return None
+    return None
+
+
 _TAP = _FlagTap()
 
 
 class PushToTalk:
-    """Tracks whether the configured modifier combo is currently held."""
+    """Tracks whether a configured modifier combo is currently held.
 
-    def __init__(self, combo=DEFAULT_COMBO, on_press=None):
+    Command+Option is the default (how it is actually said). Control+Option
+    still counts so the older chord keeps working.
+    """
+
+    def __init__(self, combo=DEFAULT_COMBO, on_press=None, extra_combos=None):
         self.combo = tuple(combo)
-        self._needed = _flag_bits(self.combo)
+        extras = list(extra_combos or ())
+        if self.combo == ("cmd", "alt") and ("ctrl", "alt") not in extras:
+            extras.append(("ctrl", "alt"))
+        self._masks = [_flag_bits(self.combo)]
+        for extra in extras:
+            bits = _flag_bits(extra)
+            if bits and bits not in self._masks:
+                self._masks.append(bits)
         self._on_press = on_press
         self.held = threading.Event()
         self.saw_any_event = False
         self._started = False
 
-    def _on_event(self, etype, vk, flags) -> None:
+    def _on_event(self, etype, vk, flags, aux=None) -> None:
         self.saw_any_event = True
         _TAP.saw_any_event = True
-        if not self._needed:
+        if not self._masks:
             return
-        down = (flags & self._needed) == self._needed
+        down = any((flags & needed) == needed for needed in self._masks)
         if down and not self.held.is_set():
             self.held.set()
             if self._on_press:
@@ -225,7 +299,7 @@ class PushToTalk:
             self.held.clear()
 
     def start(self) -> bool:
-        if not self._needed:
+        if not self._masks or not any(self._masks):
             print("  (push-to-talk unavailable: empty combo)")
             return False
         _TAP.subscribe(self._on_event)
@@ -239,7 +313,10 @@ class PushToTalk:
         self.held.clear()
 
     def describe(self) -> str:
-        return "+".join(self.combo)
+        pretty = {
+            "cmd": "Command", "alt": "Option", "ctrl": "Control", "shift": "Shift",
+        }
+        return "+".join(pretty.get(k, k) for k in self.combo)
 
 
 class WakeHotkey:
@@ -291,7 +368,7 @@ class WakeHotkey:
             return changed == self._key_flag and not (flags & self._key_flag)
         return False
 
-    def _on_event(self, etype, vk, flags) -> None:
+    def _on_event(self, etype, vk, flags, aux=None) -> None:
         self.saw_any_event = True
         prev = self._prev_flags
         self._prev_flags = flags
@@ -367,3 +444,42 @@ class WakeHotkey:
             "shift_r": "Right Shift", "shift_l": "Left Shift", "shift": "Shift",
         }.get(self.key_name, self.key_name)
         return f"double-tap {pretty}"
+
+
+class VolumeKeys:
+    """Mac / EarPods volume keys adjust Max's spoken-voice gain.
+
+    Listen-only: the OS still changes system volume. We also step the
+    digital afplay level, because that is what actually makes Piper
+    tolerable on earphones.
+    """
+
+    def __init__(self, on_change=None):
+        self._on_change = on_change
+        self._started = False
+        self._last = 0.0
+
+    def _on_event(self, etype, vk, flags, aux=None) -> None:
+        if aux not in ("up", "down"):
+            return
+        if etype not in (int(kCGEventKeyDown), int(kCGEventSystemDefined)):
+            return
+        now = time.monotonic()
+        if now - self._last < 0.14:
+            return
+        self._last = now
+        if self._on_change:
+            try:
+                self._on_change(aux)
+            except Exception:
+                pass
+
+    def start(self) -> bool:
+        _TAP.subscribe(self._on_event)
+        self._started = True
+        return True
+
+    def stop(self) -> None:
+        if self._started:
+            _TAP.unsubscribe(self._on_event)
+            self._started = False

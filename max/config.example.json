@@ -13,6 +13,7 @@
   "tts_enabled": true,
   "tts_backend": "piper",
   "tts_voice_model": "max/voices/en_GB-alan-medium.onnx",
+  "tts_volume": 35,
   "voice_wake_word": "hey_jarvis",
   "voice_stt_model": "small.en",
   "voice_silence_seconds": 0.8,
@@ -21,10 +22,13 @@
   "voice_ollama_max_tokens": 80,
   "ollama_keep_alive": "30m",
   "voice_context_turns": 6,
-  "voice_conversation_window_seconds": 45,
+  "voice_conversation_window_seconds": 0,
   "voice_wake_listen_seconds": 10.0,
   "push_to_talk_enabled": true,
-  "push_to_talk_combo": ["ctrl", "alt"],
+  "push_to_talk_combo": [
+    "cmd",
+    "alt"
+  ],
   "model_roles": {
     "chat": "local",
     "voice": "local-fast",
@@ -34,5 +38,13 @@
   "browser_enabled": false,
   "screen_cloud_fallback": false,
   "user_phone": "",
-  "composio_user_id": "max"
+  "composio_user_id": "max",
+  "tts_engine": "auto",
+  "tts_provider_english": "elevenlabs",
+  "tts_english_fallback": "sarvam",
+  "tts_voice_id": "",
+  "elevenlabs_model": "eleven_flash_v2_5",
+  "tts_voice": "ritu",
+  "tts_voice_indic": "ritu",
+  "tts_rate": 180
 }

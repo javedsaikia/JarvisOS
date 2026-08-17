@@ -8,7 +8,22 @@ from datetime import datetime, timedelta
 
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
-_TIME_RE = re.compile(r"\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
+# "at 1pm", "at the 1 pm", "at 13:30", and a bare "1pm" with no "at" at
+# all. The filler word matters: dictated speech produced "at the 1pm",
+# which the older `at\s+\d` form did not match, so the time was silently
+# dropped and the event landed at a default hour nobody asked for.
+_TIME_RE = re.compile(
+    r"\bat\s+(?:the\s+|around\s+|about\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b"
+    r"|\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b",
+    re.IGNORECASE,
+)
+
+
+def _time_parts(match: re.Match) -> tuple[str, str, str]:
+    """(hour, minute, meridiem) from whichever alternative matched."""
+    if match.group(1) is not None:
+        return match.group(1), match.group(2), match.group(3)
+    return match.group(4), match.group(5), match.group(6)
 _DURATION_RE = re.compile(r"\bfor\s+(\d+)\s*(hour|hr|minute|min)s?\b", re.IGNORECASE)
 
 
@@ -38,9 +53,10 @@ def _resolve_time(text: str, day: datetime, now: datetime) -> datetime:
         rounded = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return day.replace(hour=rounded.hour, minute=0)
 
-    hour = int(match.group(1))
-    minute = int(match.group(2) or 0)
-    meridiem = (match.group(3) or "").lower()
+    raw_hour, raw_minute, raw_meridiem = _time_parts(match)
+    hour = int(raw_hour)
+    minute = int(raw_minute or 0)
+    meridiem = (raw_meridiem or "").lower()
 
     if meridiem == "pm" and hour != 12:
         hour += 12
@@ -65,17 +81,30 @@ def _resolve_duration(text: str) -> timedelta:
     return timedelta(minutes=amount)
 
 
-def extract_event_time(text: str, now: datetime = None) -> tuple[datetime, timedelta]:
-    now = now or datetime.now()
-    day = _resolve_day(text, now)
-    start = _resolve_time(text, day, now)
-    duration = _resolve_duration(text)
-    return start, duration
-
-
-_EVENT_LEADING_TRIGGER_RE = re.compile(
-    r"^(?:please\s+)?(?:add|schedule|create|book|put)\s+(?:an?\s+)?(?:event\s+)?",
+# Dictated requests are wrapped in politeness the typed form never had:
+# "Can you add a meeting...", "I want you to add a meeting...". Stripped
+# before the trigger below, which only ever anchored at position 0 — so
+# live these survived into the title, and Max offered to create an event
+# literally called "Can you add a ? Google Calendar".
+_EVENT_POLITE_PREFIX_RE = re.compile(
+    r"^\s*(?:hey|ok(?:ay)?|so)?[\s,]*"
+    r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?"
+    r"|i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+"
+    r"|i\s+want\s+"
+    r"|let'?s\s+"
+    r"|please\s+)+",
     re.IGNORECASE,
+)
+_EVENT_LEADING_TRIGGER_RE = re.compile(
+    r"^(?:please\s+)?(?:add|schedule|create|book|put|set\s+up)\s+"
+    r"(?:an?\s+)?(?:new\s+)?(?P<noun>event|meeting|appointment|call)?\s*"
+    r"(?:(?P<named>called|titled|named)|(?P<connector>with|about|for))?\s*",
+    re.IGNORECASE,
+)
+# A trailing destination is not part of the title: "...? Google Calendar"
+# was dictated as a routing hint and became the entire event name.
+_EVENT_TRAILING_DEST_RE = re.compile(
+    r"\b(?:on|in|to)?\s*(?:my\s+)?(?:google\s+)?calendar\s*$", re.IGNORECASE
 )
 _EVENT_CALENDAR_SUFFIX_RE = re.compile(
     r"\b(?:event|meeting|appointment|call)?\s*(?:on|to)\s+(?:my\s+)?calendar\b", re.IGNORECASE
@@ -90,6 +119,15 @@ def extract_event(text: str, now: datetime = None) -> tuple[str, datetime, timed
     start = _resolve_time(text, day, now)
     duration = _resolve_duration(text)
 
+    # A time that has already passed was never the intent. "Monday at 9am"
+    # said on a Monday evening means the next one, and a bare "at 9am"
+    # said at night means tomorrow — creating an event in the past looks
+    # exactly like the event not being created at all. "today" and
+    # "tomorrow" are explicit and left alone.
+    lowered = text.lower()
+    if start < now and "today" not in lowered and "tomorrow" not in lowered:
+        start += timedelta(days=7 if _DAY_WORD_RE.search(text) else 1)
+
     cut_positions = [
         m.start()
         for m in (_TIME_RE.search(text), _DAY_WORD_RE.search(text), _DURATION_RE.search(text))
@@ -97,14 +135,37 @@ def extract_event(text: str, now: datetime = None) -> tuple[str, datetime, timed
     ]
     cut = min(cut_positions) if cut_positions else len(text)
 
-    title = text[:cut]
-    title = _EVENT_LEADING_TRIGGER_RE.sub("", title)
+    title = _EVENT_POLITE_PREFIX_RE.sub("", text[:cut])
+    trigger = _EVENT_LEADING_TRIGGER_RE.match(title)
+    noun = connector = ""
+    if trigger:
+        noun = (trigger.group("noun") or "").strip()
+        connector = (trigger.group("connector") or "").strip()
+        title = title[trigger.end():]
     title = _EVENT_CALENDAR_SUFFIX_RE.sub("", title)
-    title = re.sub(r"\b(for|at|on)\s*$", "", title, flags=re.IGNORECASE).strip(" ,.-")
+    title = _EVENT_TRAILING_DEST_RE.sub("", title)
+    title = re.sub(r"\b(for|at|on|with|to)\s*$", "", title, flags=re.IGNORECASE)
+    title = title.strip(" ,.-?!")
+    # "a call with Priya" -> "Call with Priya". Only when the noun is not
+    # already in what the user said, so "meeting with the meeting team"
+    # does not gain a second one.
+    named = bool(trigger and trigger.group("named"))
+    if title and noun and not named and noun.lower() not in title.lower():
+        title = f"{noun.capitalize()} {connector} {title}".replace("  ", " ").strip()
+    elif not title and noun:
+        title = noun.capitalize()
     if not title:
-        title = "New event"
+        # No subject was dictated at all ("add a meeting tomorrow at 1").
+        # "Meeting" is what was actually said; inventing a topic would be
+        # worse than admitting there isn't one.
+        title = "Meeting"
 
     return title, start, duration
+
+
+def event_has_time(text: str) -> bool:
+    """True if the request names a clock time, so none has to be invented."""
+    return bool(_TIME_RE.search(text))
 
 
 _NOTE_TITLE_TRIGGERS = re.compile(
@@ -184,6 +245,10 @@ def extract_shell_command(text: str) -> str:
 # through to chat, and the model claimed it was playing while nothing was.
 _SONG_TRIGGER_RE = re.compile(r"\b(?:play|put on|listen to|bile|ply)\b\s*", re.IGNORECASE)
 _SONG_TRAILING_SUFFIX_RE = re.compile(r"[,\s]+(?:on|in|from|over|and)\s+spotify\s*$", re.IGNORECASE)
+# "Spotify, Bohemian Rhapsody by Queen" — the app name leads the request
+# as often as it trails it, and left in place it was searched as part of
+# the title.
+_SONG_LEADING_APP_RE = re.compile(r"^(?:on\s+|in\s+)?spotify\b[\s,:—-]*", re.IGNORECASE)
 # "a song by X", "the track called Y" — drop the framing words so only the
 # name reaches the search. Requires trailing whitespace, so a bare "some
 # music" (a generic request, not a title) is left alone.
@@ -219,6 +284,17 @@ def is_referential_song_query(query: str) -> bool:
     return q in _REFERENTIAL_SONG
 
 
+# "I want to go to Guwahati right now by a car" is travel, not
+# "Guwahati" by the artist "a car". Seen live: that split poisoned the
+# pending Spotify query, and a later "yes" on an email draft played
+# Guwahati Chariali.
+_NOT_AN_ARTIST = re.compile(
+    r"^(?:an?|the)\s+"
+    r"(?:car|taxi|cab|bus|train|plane|flight|bike|metro|road|way)$",
+    re.IGNORECASE,
+)
+
+
 def split_song_artist(query: str) -> tuple[str, str | None]:
     """Split 'High Hopes by Pink Floyd' into (title, artist)."""
     q = (query or "").strip()
@@ -228,6 +304,10 @@ def split_song_artist(query: str) -> tuple[str, str | None]:
     title = q[: match.start()].strip(" \"'")
     artist = match.group(1).strip(" \"'")
     if not title or not artist:
+        return q, None
+    if _NOT_AN_ARTIST.match(artist) or artist.lower() in {
+        "car", "taxi", "cab", "bus", "train", "plane", "bike",
+    }:
         return q, None
     return title, artist
 
@@ -251,6 +331,7 @@ def extract_song_query(text: str) -> str:
     # meant the suffix never matched and "on Spotify" stayed in the query.
     remainder = remainder.strip().strip("?.!,").strip()
     remainder = _SONG_TRAILING_SUFFIX_RE.sub("", remainder)
+    remainder = _SONG_LEADING_APP_RE.sub("", remainder)
     remainder = _SONG_FRAMING_RE.sub("", remainder)
     return remainder.strip().strip("?.!,").strip()
 

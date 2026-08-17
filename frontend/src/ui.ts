@@ -53,9 +53,12 @@ export class UI {
   private modelsStatus: HTMLElement;
   private frontCard: HTMLElement | null;
   private frontShutter: HTMLButtonElement | null;
-  private memoryFacts: HTMLElement | null;
-  private memoryStatus: HTMLElement | null;
+  private screenCard: HTMLElement | null;
   private micLabel: HTMLElement;
+  private ttsVolume: HTMLInputElement | null;
+  private ttsVolumeReadout: HTMLElement | null;
+  private volDownBtn: HTMLButtonElement | null;
+  private volUpBtn: HTMLButtonElement | null;
 
   // HUD readout panel — purely additive, independent of status-dot/statusLabel above.
   private readoutLink: HTMLElement;
@@ -83,6 +86,7 @@ export class UI {
   onScreenToggle: ((enabled: boolean) => void) | null = null;
   onModelChange: ((role: string, model: string) => void) | null = null;
   onMicToggle: ((muted: boolean) => void) | null = null;
+  onTtsVolume: ((level: number) => void) | null = null;
 
   constructor() {
     this.transcript = document.getElementById("transcript")!;
@@ -112,9 +116,12 @@ export class UI {
     this.modelsStatus = document.getElementById("models-status")!;
     this.frontCard = document.getElementById("front-card");
     this.frontShutter = document.getElementById("front-shutter") as HTMLButtonElement | null;
-    this.memoryFacts = document.getElementById("memory-facts");
-    this.memoryStatus = document.getElementById("memory-status");
+    this.screenCard = document.getElementById("screen-card");
     this.micLabel = document.getElementById("mic-label")!;
+    this.ttsVolume = document.getElementById("tts-volume") as HTMLInputElement | null;
+    this.ttsVolumeReadout = document.getElementById("tts-volume-readout");
+    this.volDownBtn = document.getElementById("vol-down") as HTMLButtonElement | null;
+    this.volUpBtn = document.getElementById("vol-up") as HTMLButtonElement | null;
 
     this.readoutLink = document.getElementById("readout-link")!;
     this.readoutBackend = document.getElementById("readout-backend")!;
@@ -136,6 +143,19 @@ export class UI {
       // Optimistic only for the label; setMicState() below is what
       // actually confirms it, once the voice loop has closed the device.
       this.onMicToggle?.(!this.micMuted);
+    });
+    const emitVolume = (level: number) => {
+      this.setTtsVolume(level);
+      this.onTtsVolume?.(level);
+    };
+    this.ttsVolume?.addEventListener("input", () => {
+      emitVolume(Number(this.ttsVolume!.value));
+    });
+    this.volDownBtn?.addEventListener("click", () => {
+      emitVolume(Number(this.ttsVolume?.value || 35) - 10);
+    });
+    this.volUpBtn?.addEventListener("click", () => {
+      emitVolume(Number(this.ttsVolume?.value || 35) + 10);
     });
     this.screenBtn.addEventListener("click", () => {
       this.setScreenFeedState(!this.screenFeedOn);
@@ -257,6 +277,7 @@ export class UI {
   setScreenFeedState(enabled: boolean): void {
     this.screenFeedOn = enabled;
     this.screenBtn.classList.toggle("off", !enabled);
+    this.screenCard?.classList.toggle("feed-off", !enabled);
     this.screenLabel.textContent = enabled ? "Screen On" : "Screen Off";
     if (!enabled) {
       this.screenStatus.textContent = "Off";
@@ -324,30 +345,16 @@ export class UI {
     this.modelsStatus.classList.remove("cloud");
   }
 
-  setMemory(facts: string[], style: string[] = []): void {
-    if (!this.memoryFacts || !this.memoryStatus) return;
-    this.memoryFacts.replaceChildren();
-    const items = [...facts, ...style.map((s) => s)];
-    if (!items.length) {
-      const empty = document.createElement("li");
-      empty.className = "memory-empty";
-      empty.textContent = "Nothing stored yet. Say remember this…";
-      this.memoryFacts.appendChild(empty);
-      this.memoryStatus.textContent = "Empty";
-      return;
-    }
-    for (const fact of items.slice(0, 12)) {
-      const li = document.createElement("li");
-      li.textContent = fact;
-      this.memoryFacts.appendChild(li);
-    }
-    this.memoryStatus.textContent = String(items.length);
-  }
-
   /** Microphone state, as reported by the voice loop actually opening or
    * closing the device — not by the button being clicked. For a privacy
    * control the UI must show what is true, not what was asked for.
    */
+  setTtsVolume(level: number): void {
+    const pct = Math.max(5, Math.min(100, Math.round(level)));
+    if (this.ttsVolume) this.ttsVolume.value = String(pct);
+    if (this.ttsVolumeReadout) this.ttsVolumeReadout.textContent = String(pct);
+  }
+
   setMicState(muted: boolean): void {
     this.micMuted = muted;
     this.micBtn.classList.toggle("off", muted);

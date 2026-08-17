@@ -1,3 +1,4 @@
+import { paused } from "./idle";
 // Circular waveform wrapped around the core.
 //
 // The orb glows and swells with audio, but glow alone is a poor read of
@@ -63,6 +64,9 @@ export class VoiceRing {
   }
 
   private frame = (): void => {
+    // Re-arm before bailing: dropping the frame must not stop the
+    // loop, or it would never come back when the page is shown again.
+    if (paused()) return void requestAnimationFrame(this.frame);
     // Ease toward the incoming level so a dropped frame doesn't punch a
     // notch into the ring, then record it as this frame's sample.
     this.smoothed += (this.latest - this.smoothed) * 0.35;

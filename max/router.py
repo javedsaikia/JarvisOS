@@ -72,13 +72,20 @@ _MAILBOX = r"(?:e-?mails?|inbox|mail|gmail|g-mail)"
 EMAIL_WRITE_PATTERNS = [
     r"\bsend (an? |this )?(e-?mail|gmail)\b",
     r"\bcompose (an? )?(e-?mail|gmail)\b",
+    r"\bdraft (an? |this )?(e-?mail|gmail|mail)\b",
+    r"\bwrite (an? |this )?(e-?mail|gmail)\b",
     r"\breply to (that |this |the )?(e-?mail|gmail|message)\b",
+    # "reply to Zapier and say thank you" — name, not "the email".
+    r"\breply to \S+",
+    r"\b(e-?mail|gmail)\b.{0,40}\b(say|saying)\b",
     rf"\b{_MAILBOX}\b.+\b(to|saying|about)\b",
 ]
 
 EMAIL_READ_PATTERNS = [
     rf"\bcheck (my |the )?{_MAILBOX}\b",
-    rf"\bread (out |through )?(my |the )?{_MAILBOX}\b",
+    # "my/the" required. Seen live: "D-Read Gmail.com" matched
+    # "read … gmail" and fetched the inbox instead of taking a recipient.
+    rf"\bread (out |through )?(my |the |your ){_MAILBOX}\b",
     rf"\bgo through (my |the )?{_MAILBOX}\b",
     rf"\bsummar(?:ize|ise) (my |the )?{_MAILBOX}\b",
     rf"\bopen (my |the )?{_MAILBOX}\b",
@@ -87,6 +94,32 @@ EMAIL_READ_PATTERNS = [
     rf"\bany (new |unread )?{_MAILBOX}\b",
     rf"\b(unread|new) {_MAILBOX}\b",
     rf"\b(any|new)\b.*\b(unread )?{_MAILBOX}\b",
+    r"ই(?:-)?মেইল",
+    r"ইনবক্স",
+]
+
+# Newly connected Composio toolkits. Each requires the product name, for
+# the same reason GitHub/YouTube/Drive do: "my calendar" is the local
+# Apple Calendar (instant, offline, no round trip), and only "google
+# calendar" should pay for the network.
+GOOGLE_CALENDAR_PATTERNS = [
+    r"\bgoogle cal(?:endar)?\b",
+    r"\bg[- ]cal\b",
+]
+
+GOOGLE_TASKS_PATTERNS = [
+    r"\bgoogle tasks?\b",
+    r"\b(?:my )?task list\b",
+]
+
+LINKEDIN_PATTERNS = [
+    r"\blinked ?in\b",
+]
+
+REDDIT_PATTERNS = [
+    r"\breddit\b",
+    r"\br/\w+",
+    r"\bsubreddit\b",
 ]
 
 # Connected Composio toolkits. Require the product name so they cannot
@@ -111,6 +144,12 @@ CAL_COM_PATTERNS = [
     r"\bcal com\b",
     r"\bcal booking\b",
     r"\bcal\.com (booking|event|link|schedule)\b",
+]
+
+# ChatFAI — only when they name the product, so movie/OMDb questions stay put.
+CHATFAI_PATTERNS = [
+    r"\bchatfai\b",
+    r"\bchat fai\b",
 ]
 
 # Local AppleScript status on this Mac — not a cloud account lookup.
@@ -189,19 +228,44 @@ SPOTIFY_UNMUTE_PATTERNS = [
     r"\b(spotify|volume|music)\b.*\bunmuted\b",
 ]
 
-SPOTIFY_VOLUME_DOWN_PATTERNS = [
+# Max's spoken voice — not Spotify. Generic "volume down" used to hit
+# Spotify and leave the reply still piercing on earphones. Music-specific
+# phrasing stays on the Spotify groups below.
+VOICE_VOLUME_DOWN_PATTERNS = [
+    r"\b(too loud|so loud|way too loud|piercing)\b",
+    r"\bhurts my (ear|ears)\b",
+    r"\b(speak|talk)\b.*\b(quieter|softer|lower)\b",
+    r"\b(quieter|softer)\b",
+    r"\bturn (your )?(voice|volume) down\b",
+    r"\b(your|max['’]?s?)\b.{0,20}\bvolume\b.{0,20}\b(down|lower|decrease)\b",
+    r"\b(decrease|lower)\b.{0,20}\b(your |the )?(voice |speech )?volume\b",
     r"\bdecrease (the )?volume\b",
-    r"\bturn down (the )?(volume|music|spotify|song)\b",
+    r"\bturn down (the )?volume\b",
     r"\bvolume down\b",
     r"\blower (the )?volume\b",
-    r"\b(spotify|music)\b.*\b(volume|it)\b.*\bdecreased\b",
+]
+
+VOICE_VOLUME_UP_PATTERNS = [
+    r"\b(speak|talk)\b.*\b(louder|up)\b",
+    r"\b(louder)\b",
+    r"\bturn (your )?(voice|volume) up\b",
+    r"\b(your|max['’]?s?)\b.{0,20}\bvolume\b.{0,20}\b(up|higher|increase)\b",
+    r"\bincrease (the )?volume\b",
+    r"\bturn up (the )?volume\b",
+    r"\bvolume up\b",
+    r"\bmake it louder\b",
+]
+
+SPOTIFY_VOLUME_DOWN_PATTERNS = [
+    r"\bturn down (the )?(music|spotify|song)\b",
+    r"\b(spotify|music)\b.*\b(volume|it)\b.*\b(decreased|down|lower)\b",
+    r"\b(decrease|lower) (the )?(spotify|music) volume\b",
 ]
 
 SPOTIFY_VOLUME_UP_PATTERNS = [
-    r"\bincrease (the )?volume\b",
-    r"\bturn up (the )?(volume|music|spotify|song)\b",
-    r"\bvolume up\b",
-    r"\bmake it louder\b",
+    r"\bturn up (the )?(music|spotify|song)\b",
+    r"\b(spotify|music)\b.*\b(volume|it)\b.*\b(increased|up|higher|louder)\b",
+    r"\b(increase|raise) (the )?(spotify|music) volume\b",
 ]
 
 SPOTIFY_NEXT_PATTERNS = [
@@ -246,6 +310,18 @@ SPOTIFY_PLAY_TRACK_PATTERNS = [
     r"\bplay\b\s+(?!some\b|the\b|any\b|music\b|something\b|anything\b|it\b|that\b|this\b)\S+",
     # STT of "play" — seen live: "Bile, nothing else matters by Metallica".
     r"\b(bile|ply)\b[,\s]+\S+",
+    # Last resort: the word "Spotify" appearing at all. Every more
+    # specific Spotify action — what's playing, open, pause, mute, volume,
+    # next, previous — is checked BEFORE this group, so this only catches
+    # what none of them wanted.
+    #
+    # It exists because speech-to-text mangles song titles far more than
+    # it mangles the word "Spotify". Measured live: "<title> by <band> on
+    # Spotify" came through as "by being deployed on Spotify" — no "play"
+    # anywhere in it, so nothing matched, the turn fell through to the
+    # chat model, and the model announced it was playing the song while
+    # nothing happened. Saying Spotify means Spotify.
+    r"\bspotify\b",
 ]
 
 # Deterministic, not LLM-mediated — read-only informational, same tier as
@@ -254,22 +330,58 @@ SPOTIFY_PLAY_TRACK_PATTERNS = [
 # model cannot invent "today's news" from training data — seen live on
 # weather and politics questions. Requires a news word, not a bare
 # "what's happening at work".
+# Movie/series facts via OMDb. After nearby so "movie theater" stays maps.
+OMDB_PATTERNS = [
+    r"\b(movie|film|imdb)\b",
+    r"\b(tv series|tv show|web series)\b",
+    r"\bwho directed\b",
+    r"\bwho (stars|starred|acts|acted) in\b",
+    r"\bplot of\b",
+    r"\bimdb (rating|score)\b",
+    r"\b(rating|ratings) (for|of)\b.+\b(movie|film|show|series)\b",
+    r"\bwhen (was|did)\b.+\b(released|come out)\b",
+]
+
 NEWS_PATTERNS = [
     r"\b(latest |today'?s |the |daily )?(ai |tech(?:nology)? |politic(?:al|s)? |finance |financial |business |world |global )?news\b",
-    r"\bheadlines\b",
+    # Bare "headlines" stole an inbox summary — "summarize it, only the
+    # headlines" after email. Need a news word, not just the noun.
+    r"\b(news|today'?s|daily) headlines\b",
     r"\bwhat'?s happening (today|in the world|globally|across the globe|in (ai|tech|politics|finance))\b",
     r"\bnews (today|briefing|update|roundup)\b",
+]
+
+# Live board at a cinema — not OMDb (that's plot/cast) and not Spotify
+# ("what's playing"). Maps names the hall; BookMyShow has the shows.
+SHOWTIME_PATTERNS = [
+    r"\b(now showing|now-showing|showtimes?|show times?)\b",
+    # "screen" deliberately NOT in this list. A cinema screen and the one
+    # on this Mac are the same word, and showtimes is checked before the
+    # screen group — so this pattern was claiming "what's on my screen",
+    # the single most documented phrase in the whole tool, and answering it
+    # with cinema listings. "the big screen" keeps the film sense.
+    r"\bwhat('s| is| movies? are) (on|playing|running|showing)\b.*\b(theater|theatre|cinema|big screen)\b",
+    r"\b(movies?|films?|shows?)\b.*\b(playing|running|showing)\b.*\b(theater|theatre|cinema|now|today)\b",
+    r"\b(playing|running|showing)\b.*\b(theater|theatre|cinema)\b",
+    r"\bwhich (movies?|films?|shows?)\b.*\b(theater|theatre|cinema|screen)\b",
+    r"\b(movies?|films?)\b.*\b(in (the |this )?(theater|theatre|cinema)|on (at )?(the )?screen)\b",
+    r"ছবি.{0,20}(?:চলিছে|চলি আছে|শ্ব)",
+    r"(?:চিনেমা|থিয়েটাৰ|theater|theatre).{0,24}(?:ছবি|শ্ব|চলিছে)",
+    r"শ্ব['’]?\s*টাইম",
 ]
 
 WEATHER_PATTERNS = [
     r"\bwhat('s| is) the weather\b",
     r"\bhow('s| is) the weather\b",
     r"\bhow'?s weather\b",
-    r"\bweather (today|now|outside|like|here|forecast|report)\b",
+    r"\bweather (today|now|outside|like|here|forecast|report|in|for|at)\b",
     r"\b(current |today'?s |local |my )?weather\b",
     r"\b(check|tell me|give me|get) (the |today'?s )?weather\b",
+    r"\b(weather )?forecast\b",
+    r"\bforecast (for|in|at)\b",
     r"\bis it (going to |gonna )?rain(ing)?\b",
-    r"\btemperature (outside|here|today)\b",
+    r"\bwill it rain\b",
+    r"\btemperature (outside|here|today|in|for)\b",
     r"\bhow (hot|cold|warm) is it\b",
     r"\bhow'?s it (look )?(outside|out there)\b",
     # Assamese / Hindi — otherwise these skip the tool and the model
@@ -291,10 +403,21 @@ WEATHER_PATTERNS = [
 # real-time access to current locations" — an apology for a capability
 # this actually has. A miss here is not a cheap failure: it hands a
 # location question to something with no location.
-_PLACE = (r"(?:restaurants?|hotels?|gas stations?|petrol|fuel|caf[eé]s?|coffee"
-          r"|pharmac(?:y|ies)|food|places? to eat|somewhere to eat|bars?|atms?"
-          r"|hospitals?|clinics?|supermarkets?|groceries|grocery stores?)")
-_NEAR = r"(?:nearby|near me|near here|near my location|around here|close by|closest|nearest|in the area|around me)"
+_PLACE = (r"(?:restaurants?|hotels?|gas stations?|petrol(?: pump)?s?|fuel|"
+          r"caf[eé]s?|coffee|pharmac(?:y|ies)|food|places? to eat|somewhere to eat|"
+          r"bars?|atms?|hospitals?|clinics?|supermarkets?|groceries|grocery stores?"
+          r"|movie theaters?|movie theatres?|cinemas?|theat(?:er|re)s?"
+          r"|malls?|shopping malls?|banks?|parks?|parking|houses?|homes?"
+          r"|kfc|mcdonald'?s|domino'?s|pizza hut|starbucks|subway|burger king)")
+# "close to my location" is how this is actually asked. Without it,
+# NEARBY missed and HERE's "my location" stole the turn — seen live:
+# "restaurants close to my location" / "any KFC close to my location"
+# both answered only "You're in Jorhat. That's the GPS talking."
+_NEAR = (
+    r"(?:nearby|near me|near here|near my location|around here|around me|"
+    r"around my location|close by|close to(?: me| here| my location)?|"
+    r"closest|nearest|in the area)"
+)
 
 # "Where am I?" is not weather. Seen live: "Max মোৰ location-টো কি?" and
 # "মোৰ ঠাইটুকুৰাৰ নাম কি?" missed every location group, fell through to
@@ -338,6 +461,8 @@ NEARBY_PATTERNS = [
     # "where can I eat", "somewhere to grab a coffee" — the intent is a
     # place near the user even with no proximity word at all.
     r"\bwhere can i (?:eat|get (?:some )?(?:food|coffee|lunch|dinner|breakfast))\b",
+    r"\b(?:what'?s|whats) (?:near me|around me|around here|close by)\b",
+    r"\bplaces? (?:near me|around me|around here|nearby|close by)\b",
     rf"\b(?:any|some) (?:good |decent |nice )?{_PLACE}\b.*\b(?:open|around|here|near)\b",
     # Asking for the names is the whole request — no proximity word.
     # Seen live: "মোৰ ওচৰৰ restaurant-ৰ নাম" skipped the tool and Sarvam
@@ -345,14 +470,38 @@ NEARBY_PATTERNS = [
     rf"\b(?:list|show|give me|tell me|what(?:'s| is| are)?) (?:some |the |any |a )?(?:nearby |nearest |closest |local |good )?{_PLACE}\b",
     rf"\bnames? of (?:the |some |any )?(?:nearby |nearest |local )?{_PLACE}\b",
     rf"\b{_PLACE}\b[- ]?(?:names?|list)\b",
+    # "identify restaurants close to my location" / "any KFC close to…"
+    rf"\b(?:identify|find|list|show|any|some)\b.+\b{_PLACE}\b",
+    rf"\b{_PLACE}\b.+\b(?:location|nearby|near|close)\b",
+    r"\b(?:is there (?:any |a )?|any |find )\w[\w'&.-]{1,24}.+\b(?:close to|near|nearby|my location)\b",
     # Assamese / Hindi — restaurant as an English loan is how it is
     # actually said. ৰেষ্টুৰেণ্ট / रेस्तरां for the native spellings.
-    r"ওচৰ.{0,24}(?:restaurant|ৰেষ্টুৰেণ্ট|হোটেল|cafe|ক্যাফে)",
-    r"(?:restaurant|ৰেষ্টুৰেণ্ট|হোটেল).{0,16}(?:ওচৰ|নাম)",
+    r"ওচৰ.{0,40}(?:restaurant|ৰেষ্ট[োু]ৰেণ্ট|হোটেল|cafe|ক্যাফে|চিনেমা|পেট্ৰল)",
+    r"(?:restaurant|ৰেষ্ট[োু]ৰেণ্ট|হোটেল).{0,24}(?:ওচৰ|নাম|পাঁজৰে)",
     r"restaurant[- ]?ৰ নাম",
-    r"ৰেষ্টুৰেণ্ট",
+    r"ৰেষ্ট[োু]ৰেণ্ট",
+    r"ওচৰে.?পাঁজৰে",
+    r"লাঞ্চ.{0,48}(?:বাহিৰ|ৰেষ্ট|restaurant)",
+    r"খাবলৈ.{0,32}(?:বাহিৰ|ৰেষ্ট|restaurant)",
+    r"চিনেমা",
+    r"মুভি.{0,24}(?:চাব|হল|ওচৰ)",
+    r"ছবি.{0,16}হল",
     r"आसपास.{0,16}(?:रेस्तरां|होटल|restaurant)",
     r"रेस्तरां",
+    # Catch-all so an unlisted place type still hits Google Maps, not HERE
+    # or the chat model. Seen live: "nearest movie theater to my location"
+    # answered only "You're in Jorhat."
+    r"\b(?:nearest|closest|nearby)\b.{0,48}\b(?:to my location|near me|close to me|close to mine|around here)\b",
+    r"\b(?:find|show|any|list)\b.{0,24}\b(?:close to mine|close to my location|near me|nearby)\b",
+]
+
+DISTANCE_PATTERNS = [
+    r"\bhow far\b",
+    r"\bhow long (?:does it take|to (?:get|drive|go|reach))\b",
+    r"\bdistance (?:to|from|between)\b",
+    r"\b(?:drive|travel) time\b",
+    r"\bdirections to\b",
+    r"\broute to\b",
 ]
 
 # "What can you do?" answered from the actual tool list rather than by the
@@ -376,6 +525,28 @@ MODEL_QUESTION_PATTERNS = [
     r"\bwho (made|built|trained) you\b",
 ]
 
+# Jokes must not fall through to Sarvam's polite-mode. Seen live:
+# "adult joke" / "dirty joke" / "sexy joke" in Assamese got a children's
+# punchline. Route here so Groq tells the actual joke.
+JOKE_PATTERNS = [
+    r"\b(adult|dirty|sexy|filthy|rude|nsfw)\s+joke\b",
+    r"\b(dirty|sexy|filthy)\s+jokes?\b",
+    r"\btell (me )?(a |an )?(adult |dirty |sexy |filthy )?(joke|jokes)\b",
+    r"\b(a |an )?(adult |dirty |sexy )?joke\b",
+    r"\bjoke\s+(এটা|eta|eka)\b",
+    r"\b(এটা|eta)\s+(adult |dirty |sexy )?joke\b",
+    r"জোক",
+    r"ধেমালি\s*(কথা|কৈ|কও|কোৱা)",
+]
+
+# "Can you hear me?" must not go to Groq — seen live it answered
+# "You said you're in Jorhat" from leftover context.
+PING_PATTERNS = [
+    r"\bcan you hear me\b",
+    r"\bare you (there|listening|awake)\b",
+    r"\byou (there|listening)\b",
+]
+
 CAPABILITY_PATTERNS = [
     r"\bwhat (can|do) you do\b",
     r"\bwhat are (your|the) (capabilities|abilities|features|tools)\b",
@@ -394,6 +565,34 @@ MAPS_PATTERNS = [
     r"\bopen (that |this |it )?(in|on) (apple )?maps\b",
     r"\bshow (that |this |it )?on (the |a )?map\b",
     r"\bopen maps\b",
+]
+
+# Reminders land in Google Calendar (timed) or Google Tasks (dated) —
+# see max/tools/reminder.py. Checked BEFORE the call group, because
+# "remind me to call mum at 5" is a reminder, not a request to phone her:
+# measured, that exact sentence routed to tools:call.
+REMINDER_PATTERNS = [
+    r"\bremind me\b",
+    r"\bset (?:up )?(?:an? )?reminder\b",
+    r"\b(?:add|create|make|put) (?:an? )?reminder\b",
+    r"\breminder (?:to|about|for)\b",
+    r"\bdon'?t let me forget\b",
+]
+
+# "What's the phone number for X" — a LOOKUP, never a dial. Checked before
+# CALL_PATTERNS so asking for a number does not ring anybody.
+#
+# It exists because there was no route at all: measured live, "do you have
+# the contact number at the KFC?" fell through to the chat model, which
+# answered "+91-361-2504870" with total confidence. That number is
+# invented — 0361 is the Guwahati code, not Jorhat — and the persona
+# explicitly forbids inventing phone numbers. The only defence that works
+# is never letting the question reach the model.
+PHONE_LOOKUP_PATTERNS = [
+    r"\b(?:contact|phone|mobile|tele(?:phone)?)\s*(?:number|no\.?)\b",
+    r"\bnumber (?:of|for|at)\b",
+    r"\bwhat(?:'s| is)\b[^.?!]{0,20}\bnumber\b",
+    r"\b(?:do you have|give me|find|get me)\b[^.?!]{0,24}\bnumber\b",
 ]
 
 # Confirmed, deterministic — NOT LLM-mediated, same reasoning as
@@ -430,7 +629,7 @@ CALL_PATTERNS = [
     # not treated as a place called "and".
     r"\b(?:call|ring|phone)\s+(?:up\s+)?(?:the\s+)?"
     r"(?!it\b|this\b|that\b|me\b|you\b|us\b|back\b|off\b|out\b|in\b|for\b|on\b|upon\b|"
-    r"and\b|or\b|"
+    r"and\b|or\b|logs?\b|"
     r"an? (?:meeting|ambulance|taxi|cab|uber)\b)"
     r"[A-Za-z][\w'&.\-]*",
     r"\bcall (them|him|her|that place|that one|that restaurant|that hotel)\b",
@@ -442,6 +641,30 @@ CALL_PATTERNS = [
 # need LLM extraction (a path/content isn't literally present in the text
 # the way a shell command is) — see SHELL_PATTERNS below for the
 # deterministic, non-LLM-mediated shell path.
+# Things that only exist on a screen. The guide-me patterns below all
+# require one, so "show me"/"where is" can't claim a sentence that was
+# never about the display.
+_CONTROL = (
+    r"(?:button|tab|link|icon|menu|option|setting|toggle|checkbox|"
+    r"field|box|bar|panel|window|dialog|screen|page|cursor|pointer|mouse)"
+)
+
+# Circle part of the screen and ask about just that (max/region_select.py).
+# Checked BEFORE the whole-screen group, so "what is this area" opens the
+# crayon rather than describing the entire desktop — "what's on my screen"
+# has no area word and still gets the whole thing.
+REGION_PATTERNS = [
+    r"\b(circle|highlight|select|mark)\b[^.?!]{0,20}\b(this|that|an? )?(area|region|part|section|bit|portion)\b",
+    r"\blet me (circle|highlight|select|mark|show you)\b",
+    r"\bi'?ll (circle|highlight|select|mark) (it|this|that)\b",
+    r"\bwhat('s| is)\b[^.?!]{0,12}\b(this|that)\b[^.?!]{0,12}\b(area|region|part|section|bit|picture|image|diagram|photo|chart|graph)\b",
+    r"\b(tell me|explain|describe)\b[^.?!]{0,20}\b(this|that)\b[^.?!]{0,12}\b(area|region|part|section|picture|image|diagram|photo|chart|graph)\b",
+    r"\bwhat (is|are) (this|these|that) (picture|image|diagram|photo|chart|graph|thing)s?\b",
+    r"\b(circle|highlight) (it|this|that)\b",
+    r"\bonly (this|that) (part|area|bit|section)\b",
+    r"\bjust (this|that) (part|area|bit|section)\b",
+]
+
 # Deterministic, not LLM-mediated — there's nothing to extract from the
 # phrasing (unlike browser targets/URLs below), so this is the same
 # "cheap and direct" treatment as calendar/notes/email reads.
@@ -449,6 +672,10 @@ SCREEN_PATTERNS = [
     r"\bwhat('s| is) on (my |the )?screen\b",
     r"\bwhat (can |do )?you (see|tell).{0,40}(screen|desktop)\b",
     r"\bwhat('s| is) on (this|the) page\b",
+    # "Summarize this page" — read what is actually on screen rather than
+    # letting the chat model invent an article it has never seen.
+    r"\b(summari[sz]e|sum up|tldr|give me the gist)\b[^.?!]{0,24}\b(this|the|that|it)?\s*"
+    r"(page|article|document|doc|screen|tab|site|website|post|email|thread)?\b",
     r"\bdescribe what i('m| am) (looking at|seeing)\b",
     r"\bwhat do you see\b",
     r"\btake a screenshot\b",
@@ -481,16 +708,32 @@ SCREEN_PATTERNS = [
     r"\bwhat('s| is) on (my |the )?desktop\b",
     r"\bread (my |the )?(whole )?desktop\b",
     # Guide-me: point the cursor at a control they cannot find.
-    r"\b(show|point|guide) (me )?(where |to )?(the |this |that )?",
-    r"\bwhere (is|are) (the |this |that )?.{0,40}(button|tab|link|icon|menu)?",
+    #
+    # Every pattern in this group has to name something that lives on a
+    # screen. Measured: without that requirement the trailing groups here
+    # were all optional, so these two collapsed to a bare "show "/"where
+    # is" and swallowed ordinary conversation — "where is Paris", "show me
+    # a good recipe for pasta" and "how do I show gratitude" all took a
+    # screenshot and answered from the desktop. A router miss costs one
+    # turn; this cost a full capture + OCR + model pass on text that was
+    # never about the screen at all, and it fires far more often than the
+    # misses these were widened to catch.
+    rf"\b(?:show|point|guide) (?:me )?(?:where |to )?(?:the |this |that )?[^.?!]{{0,40}}\b{_CONTROL}s?\b",
+    rf"\bwhere (?:is|are) (?:the |this |that )?[^.?!]{{0,40}}\b{_CONTROL}s?\b",
     r"\bi (can'?t|cannot|am not able to) see\b",
     r"\b(show|find) (me )?(the |this |that )?.{0,40}(button|tab|link|on (my |the )?screen)\b",
     r"\bwhat('s| is) this .{0,24}(button|link|tab|icon|menu)\b",
     r"\b(the |this |that )?(pull requests?|settings) (button|tab|link)\b",
     r"\bpoint (a |the )?(cursor|pointer|mouse)\b",
-    r"\b(show|point) (it |that |this )?(to me|out)\b",
+    # Pronoun required: bare "point out" is ordinary English ("point out
+    # the obvious") and was routing it to a screenshot.
+    r"\b(show|point) (it|that|this) (to me|out)\b",
     r"\bwhere exactly\b",
-    r"^(hey[, ]+)?(max[, ]+)?(yes[, ]+)?(can you )?show me\b",
+    # Bare "show me" as the whole line — the follow-up after Max offers to
+    # point something out. Anchored to the end of the utterance: with a
+    # \b there instead, this matched the opening words of any sentence
+    # ("show me a good recipe"), which is the same over-capture as above.
+    r"^(?:hey[, ]+)?(?:max[, ]+)?(?:yes[, ]+)?(?:can you )?show me\s*(?:it|that|this|where)?\s*[.?!]*$",
 ]
 
 # Browser actions are LLM-mediated (like FILES_PATTERNS below) — click
@@ -524,6 +767,18 @@ BROWSER_PATTERNS = [
     # as the "go to" pattern above so "open the calendar"/"open spotify"
     # don't misfire.
     r"\bopen\b.+(\.(com|org|net|io|co|dev|app|in)\b|https?://)",
+]
+
+# Max writes the text and, only after a yes, types it in (max/compose.py).
+# Checked AFTER the email group, so "draft an email to bob@x.com" still
+# goes to Gmail, which can resolve the address and actually send it;
+# compose.detect() stands aside on its own when a recipient is named.
+COMPOSE_PATTERNS = [
+    r"\b(write|draft|compose|create|prepare|make)\b[^.?!]{0,40}?\b"
+    r"(prompt|letter|cover letter|covering letter|resume|résumé|cv|"
+    r"instructions?|essay|paragraph|bio|caption|post)\b",
+    # "write an email about the launch" — content-first, no recipient.
+    r"\b(write|draft|compose)\b\s+(an?\s+|the\s+)?(e-?mail|message|reply|notes?)\b",
 ]
 
 FILES_PATTERNS = [
@@ -600,6 +855,12 @@ _TOOL_GROUPS = [
     ("youtube", "auto", [re.compile(p, re.IGNORECASE) for p in YOUTUBE_PATTERNS]),
     ("googledrive", "auto", [re.compile(p, re.IGNORECASE) for p in DRIVE_PATTERNS]),
     ("cal", "auto", [re.compile(p, re.IGNORECASE) for p in CAL_COM_PATTERNS]),
+    ("chatfai", "auto", [re.compile(p, re.IGNORECASE) for p in CHATFAI_PATTERNS]),
+    ("googlecalendar", "auto", [re.compile(p, re.IGNORECASE) for p in GOOGLE_CALENDAR_PATTERNS]),
+    ("googletasks", "auto", [re.compile(p, re.IGNORECASE) for p in GOOGLE_TASKS_PATTERNS]),
+    ("linkedin", "auto", [re.compile(p, re.IGNORECASE) for p in LINKEDIN_PATTERNS]),
+    ("reddit", "auto", [re.compile(p, re.IGNORECASE) for p in REDDIT_PATTERNS]),
+    ("location", "showtimes", [re.compile(p, re.IGNORECASE) for p in SHOWTIME_PATTERNS]),
     ("spotify", "read", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_READ_PATTERNS]),
     # pause checked BEFORE play — seen live: "don't play the music" contains
     # the substring "play the music", which SPOTIFY_PLAY_PATTERNS matches
@@ -613,6 +874,8 @@ _TOOL_GROUPS = [
     ("spotify", "play", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_PATTERNS]),
     ("spotify", "mute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_MUTE_PATTERNS]),
     ("spotify", "unmute", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_UNMUTE_PATTERNS]),
+    ("voice", "volume_down", [re.compile(p, re.IGNORECASE) for p in VOICE_VOLUME_DOWN_PATTERNS]),
+    ("voice", "volume_up", [re.compile(p, re.IGNORECASE) for p in VOICE_VOLUME_UP_PATTERNS]),
     ("spotify", "volume_down", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_DOWN_PATTERNS]),
     ("spotify", "volume_up", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_VOLUME_UP_PATTERNS]),
     ("spotify", "next", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_NEXT_PATTERNS]),
@@ -620,12 +883,18 @@ _TOOL_GROUPS = [
     ("spotify", "play_track", [re.compile(p, re.IGNORECASE) for p in SPOTIFY_PLAY_TRACK_PATTERNS]),
     ("news", "auto", [re.compile(p, re.IGNORECASE) for p in NEWS_PATTERNS]),
     ("location", "weather", [re.compile(p, re.IGNORECASE) for p in WEATHER_PATTERNS]),
+    ("location", "distance", [re.compile(p, re.IGNORECASE) for p in DISTANCE_PATTERNS]),
     ("location", "nearby", [re.compile(p, re.IGNORECASE) for p in NEARBY_PATTERNS]),
+    ("omdb", "auto", [re.compile(p, re.IGNORECASE) for p in OMDB_PATTERNS]),
     # After weather/nearby so "weather at my location" and "restaurants
     # near my location" stay weather/nearby. Bare "where am I" / "my
     # location" only reach here.
     ("location", "here", [re.compile(p, re.IGNORECASE) for p in HERE_PATTERNS]),
     ("location", "open_maps", [re.compile(p, re.IGNORECASE) for p in MAPS_PATTERNS]),
+    ("joke", "auto", [re.compile(p, re.IGNORECASE) for p in JOKE_PATTERNS]),
+    ("voice", "ping", [re.compile(p, re.IGNORECASE) for p in PING_PATTERNS]),
+    ("reminder", "auto", [re.compile(p, re.IGNORECASE) for p in REMINDER_PATTERNS]),
+    ("call", "number", [re.compile(p, re.IGNORECASE) for p in PHONE_LOOKUP_PATTERNS]),
     ("call", "auto", [re.compile(p, re.IGNORECASE) for p in CALL_PATTERNS]),
     # After every action group above, so a request to DO something is
     # never answered with a description of being able to do it.
@@ -634,6 +903,8 @@ _TOOL_GROUPS = [
     # Checked before "files" — a request naming a literal command (e.g. "run
     # ls -la") must never fall through to the LLM-mediated files path.
     ("shell", "auto", [re.compile(p, re.IGNORECASE) for p in SHELL_PATTERNS]),
+    ("compose", "auto", [re.compile(p, re.IGNORECASE) for p in COMPOSE_PATTERNS]),
+    ("screen", "region", [re.compile(p, re.IGNORECASE) for p in REGION_PATTERNS]),
     ("screen", "read", [re.compile(p, re.IGNORECASE) for p in SCREEN_PATTERNS]),
     # Checked before "files" — e.g. "open this website" must not fall
     # through to the files domain's "open (the|a) file" pattern.
@@ -652,7 +923,48 @@ def detect_tool(text: str) -> tuple[str, str] | None:
     SHELL_PATTERNS above for why.
     """
     stripped = text.strip()
+    # A whole utterance that is just a phone number — the follow-up after
+    # "call Sabina" when they dictate digits. Seen live: "1 2 3 2 4 9 8 0 0"
+    # fell through to chat and Groq talked about the number instead of dialling.
+    digits_only = re.sub(r"[\d\s+\-().]", "", stripped)
+    digit_count = sum(c.isdigit() for c in stripped)
+    if digit_count >= 7 and len(digits_only) <= 2:
+        return "call", "auto"
+    # "what do you call studio mode" is English idiom, not a phone call.
+    # Seen live: that phrase hit tools:call and then Apple Maps error 4.
+    _not_a_call = bool(re.search(
+        r"\bwhat(?:'s| is| do you| you)?\s+call\b", stripped, re.IGNORECASE
+    ))
+    _music_volume = bool(re.search(
+        r"\b(spotify|music|song|track)\b", stripped, re.IGNORECASE
+    ))
+    # "Write an email about the launch" names no recipient — it is a
+    # document to compose into whatever is on screen, not a Gmail draft to
+    # address and send. "Draft an email TO Sabina" still belongs to Gmail,
+    # which can resolve the name to an address and actually send it, so
+    # the presence of a recipient is what decides.
+    _compose_email = (
+        bool(re.search(r"\b(write|draft|compose)\b[^.?!]{0,24}\be-?mail\b",
+                       stripped, re.IGNORECASE))
+        and not re.search(r"\bto\s+\S", stripped, re.IGNORECASE)
+        and bool(re.search(r"\b(about|regarding|explaining|announcing)\b",
+                           stripped, re.IGNORECASE))
+    )
     for domain, action, patterns in _TOOL_GROUPS:
+        if domain == "call" and _not_a_call:
+            continue
+        if domain == "email" and action == "write" and _compose_email:
+            continue
+        # "volume down" is Max's voice unless they named the music.
+        if domain == "voice" and action.startswith("volume") and _music_volume:
+            continue
+        # Cinema board is showtimes / Maps, not a track and not OMDb.
+        if domain in ("spotify", "omdb") and re.search(
+            r"\b(theater|theatre|cinema|showtimes?|now showing|screen)\b|চিনেমা|থিয়েটাৰ|ছবি.{0,12}চলি",
+            stripped,
+            re.IGNORECASE,
+        ):
+            continue
         for pattern in patterns:
             if pattern.search(stripped):
                 return domain, action

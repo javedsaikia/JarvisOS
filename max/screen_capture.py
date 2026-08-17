@@ -30,6 +30,7 @@ none of them are about the model:
 
 Everything here is local: no image ever leaves the machine on this path.
 """
+import json
 import subprocess
 import tempfile
 import time
@@ -202,18 +203,106 @@ def glide_cursor(x: float, y: float, steps: int = 14, duration: float = 0.45) ->
     point_cursor(*dest)
 
 
-def point_at_window(window: dict) -> None:
-    """Point at the centre of a window from list_windows()."""
-    w, h = window.get("w") or 0, window.get("h") or 0
-    if w < 40 or h < 40:
-        return
-    glide_cursor(window["x"] + w / 2, window["y"] + h / 2)
+REGION_PATH = Path("/tmp/max_region.json")
 
 
-def point_at_ocr_line(line: dict, image_width: int, image_height: int) -> None:
-    """Point at an OCR line. Vision boxes are bottom-left, 0–1 of the image."""
+def select_region(timeout: int = 45) -> dict | None:
+    """Let the user circle part of the screen. Returns the rect, or None.
+
+    Blocks while they draw — that is the point; the turn is waiting on
+    their answer the same way it waits on a spoken yes/no. `None` covers
+    both "they cancelled" and "the selector could not run", because the
+    caller does the same thing either way: fall back to the whole screen.
+    """
+    import sys
+
+    REGION_PATH.unlink(missing_ok=True)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "max.region_select", "--out", str(REGION_PATH)],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(f"[screen] region select unavailable: {e}", flush=True)
+        return None
+    if result.returncode != 0:
+        print(f"[screen] region select exited {result.returncode}", flush=True)
+        return None
+    try:
+        data = json.loads(REGION_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("cancelled"):
+        return None
+    if not (data.get("w") and data.get("h")):
+        return None
+    return data
+
+
+def capture_region(x: float, y: float, w: float, h: float) -> bytes:
+    """JPEG of one rectangle of the screen, in global top-left points.
+
+    Uses `screencapture -R`, which takes exactly these coordinates, rather
+    than cropping a full capture: no scale-factor arithmetic to get wrong
+    on a Retina display, and it grabs a fraction of the pixels.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+        path = f.name
+    try:
+        result = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg",
+             "-R", f"{x:.0f},{y:.0f},{w:.0f},{h:.0f}", path],
+            capture_output=True, timeout=20,
+        )
+        if result.returncode != 0:
+            raise ScreenCaptureError(
+                (result.stderr or b"").decode(errors="replace").strip()
+                or "screencapture failed on that region"
+            )
+        data = Path(path).read_bytes()
+        if not data:
+            raise ScreenCaptureError("that region came back empty")
+        return data
+    except subprocess.TimeoutExpired as e:
+        raise ScreenCaptureError("screencapture timed out") from e
+    finally:
+        Path(path).unlink(missing_ok=True)
+
+
+def show_marker(x: float, y: float, label: str = "", seconds: float = 4.0) -> None:
+    """Draw Max's pointer at a global CG point. Returns immediately.
+
+    Spawned rather than drawn in-process: the overlay needs an
+    NSApplication run loop on the main thread, which the voice loop owns
+    (see max/cursor_overlay.py). Fire-and-forget — a marker that fails to
+    appear must never break the spoken answer that goes with it.
+    """
+    import sys
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-m", "max.cursor_overlay",
+             "--x", f"{float(x):.1f}", "--y", f"{float(y):.1f}",
+             "--label", (label or "")[:40], "--seconds", f"{float(seconds):.1f}"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as e:
+        print(f"[screen] could not show the pointer: {e}", flush=True)
+
+
+def ocr_line_point(line: dict, image_width: int, image_height: int) -> tuple[float, float] | None:
+    """Global CG (top-left, y-down) centre of an OCR line, or None.
+
+    Split out of point_at_ocr_line so the marker and the real pointer are
+    aimed at the same computed spot rather than each doing the maths.
+    """
     if not image_width or not image_height:
-        return
+        return None
     scale = 1.0
     try:
         import AppKit
@@ -224,7 +313,37 @@ def point_at_ocr_line(line: dict, image_width: int, image_height: int) -> None:
         pass
     cx = (line.get("x", 0) + line.get("width", 0) / 2) * image_width
     cy_from_bottom = (line.get("y", 0) + line.get("height", 0) / 2) * image_height
-    glide_cursor(cx / scale, (image_height - cy_from_bottom) / scale)
+    return cx / scale, (image_height - cy_from_bottom) / scale
+
+
+def point_at_window(window: dict) -> None:
+    """Point at the centre of a window from list_windows()."""
+    w, h = window.get("w") or 0, window.get("h") or 0
+    if w < 40 or h < 40:
+        return
+    glide_cursor(window["x"] + w / 2, window["y"] + h / 2)
+
+
+def point_at_ocr_line(
+    line: dict, image_width: int, image_height: int, label: str = "", marker: bool = True
+) -> tuple[float, float] | None:
+    """Point at an OCR line. Vision boxes are bottom-left, 0–1 of the image.
+
+    Moves the real pointer AND draws Max's marker on the same spot: the
+    real one so the user can click straight away without hunting, the
+    marker so they can tell which movement was Max's. Returns where it
+    pointed, or None if the line could not be placed.
+    """
+    point = ocr_line_point(line, image_width, image_height)
+    if point is None:
+        return None
+    x, y = point
+    if marker:
+        # Drawn first, so the ring is already on screen as the pointer
+        # glides into it rather than appearing after everything stopped.
+        show_marker(x, y, label)
+    glide_cursor(x, y)
+    return point
 
 
 def _cgimage_to_jpeg(image, quality: float = 0.7) -> bytes:
@@ -328,8 +447,27 @@ def capture(hud_marker: str = "", max_width: int = 0) -> tuple[bytes, dict]:
              "w": w.get("w", 0), "h": w.get("h", 0)}
             for w in named
         ][:12]
+        # The frontmost APP is app_windows[0]'s owner, but its first window
+        # is not necessarily the one being looked at. Measured on Safari:
+        # a 66x20 helper window titled "Window" sits in front of the real
+        # 1515x996 page titled "Assamese language - Wikipedia", so the
+        # title came back as "Window" and — worse — frontmost_bounds became
+        # that 66x20 sliver, which is the box the teaching pointer scopes
+        # its search to. Take the largest window belonging to the app in
+        # front instead; that is the one a person means.
         front = app_windows[0] if app_windows else {}
-        meta["frontmost"] = front.get("app") or ""
+        app_name = front.get("app") or ""
+        same_app = [w for w in app_windows if w.get("app") == app_name]
+        real = max(
+            same_app,
+            key=lambda w: (w.get("w", 0) or 0) * (w.get("h", 0) or 0),
+            default=front,
+        )
+        # Only prefer it when it is actually a window rather than a widget,
+        # so a genuinely small frontmost window still describes itself.
+        if (real.get("w", 0) or 0) * (real.get("h", 0) or 0) > 40000:
+            front = real
+        meta["frontmost"] = app_name
         meta["frontmost_title"] = front.get("title") or ""
         meta["frontmost_bounds"] = {
             "x": front.get("x", 0), "y": front.get("y", 0),
