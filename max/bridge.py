@@ -32,7 +32,7 @@ from pathlib import Path
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from max import cli, control, llm, tts, voice_events
+from max import cli, composio_client, control, llm, tts, voice_events
 from max.config import load_config, update_config
 from max.memory import LOG_PATH, MemoryStore
 from max import screen_capture, security
@@ -896,6 +896,9 @@ async def handle_connection(ws) -> None:
 
 async def main() -> None:
     security.harden_home()
+    # Build the Composio session now, on a thread, so the first request
+    # that needs it does not pay the ~2.9s cold cost in front of the user.
+    threading.Thread(target=composio_client.warm, daemon=True).start()
     print(f"Max bridge listening on ws://{HOST}:{PORT} (loopback only)")
     # Reference kept deliberately — asyncio only holds a weak reference to
     # tasks, so an unreferenced create_task() result is eligible for

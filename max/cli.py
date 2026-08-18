@@ -1599,6 +1599,17 @@ def handle_tool(
             if action == "read":
                 lowered = user_text.lower()
                 days = 7 if "week" in lowered else (2 if "tomorrow" in lowered else 1)
+                # Google Calendar first: measured 1.04s against 5.58s for
+                # the AppleScript path, and Calendar.app was reporting "No
+                # events found" for days that had real entries — the
+                # account syncs to Google, not into a local calendar.
+                # AppleScript stays as the offline fallback.
+                if composio_client.configured():
+                    try:
+                        return composio_client.list_calendar_events(user_text)
+                    except composio_client.ComposioError as e:
+                        print(f"[calendar] Composio read failed ({e}) — using Calendar.app",
+                              flush=True)
                 return calendar.list_events(days=days)
 
             # A time was never said. Ask for it instead of rounding up to

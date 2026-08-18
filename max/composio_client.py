@@ -15,6 +15,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from max import env, llm
@@ -62,8 +65,40 @@ def _client():
     return Composio(api_key=_api_key())
 
 
-def list_accounts() -> list[dict]:
+# Which accounts are connected changes when the user authorises something
+# in the Composio dashboard — minutes apart at the fastest, not seconds.
+# It was being fetched over HTTP on every single request: get_session()
+# asks twice (user_id() and active_accounts() each call list_accounts()),
+# and measured live that pair cost 2.62s BEFORE any actual work started.
+# Every Composio-backed answer paid it. Cached for the process, with a
+# TTL so a newly connected account still appears without a restart.
+_ACCOUNTS_TTL_SECONDS = 300
+_accounts_cache: tuple[float, list[dict]] | None = None
+_accounts_lock = threading.Lock()
+
+
+def refresh_accounts() -> None:
+    """Drop the cache — call after connecting an account."""
+    global _accounts_cache
+    with _accounts_lock:
+        _accounts_cache = None
+
+
+def list_accounts(force: bool = False) -> list[dict]:
     """Every connected account on this project, no user-id filter."""
+    global _accounts_cache
+    if not force:
+        with _accounts_lock:
+            cached = _accounts_cache
+        if cached and (time.monotonic() - cached[0]) < _ACCOUNTS_TTL_SECONDS:
+            return cached[1]
+    items = _list_accounts_uncached()
+    with _accounts_lock:
+        _accounts_cache = (time.monotonic(), items)
+    return items
+
+
+def _list_accounts_uncached() -> list[dict]:
     client = _client()
     resp = client.connected_accounts.list(limit=50)
     items = []
@@ -120,6 +155,27 @@ def _save_session_record(record: dict) -> None:
         pass
 
 
+# The live session object, not just its id. Rebuilding it from the id
+# still costs a `composio.use()` round trip, and nothing about it changes
+# between requests in one process.
+_session_cache: tuple[dict, object] | None = None
+_session_lock = threading.Lock()
+
+
+def warm(cfg: dict | None = None) -> None:
+    """Build the session ahead of the first request.
+
+    Fire-and-forget at startup: the cost is real but it is the user's
+    first question that should not be the one paying it.
+    """
+    try:
+        get_session(cfg)
+    except Exception as e:
+        print(f"[composio] warm-up skipped ({type(e).__name__}: {e})", flush=True)
+        return
+    prefetch_inbox()
+
+
 def get_session(cfg: dict | None = None):
     """Create or reuse a session bound to the authorized accounts."""
     uid = user_id(cfg)
@@ -131,6 +187,11 @@ def get_session(cfg: dict | None = None):
     ]
     fingerprint = {"user_id": uid, "toolkits": toolkits, "accounts": accounts}
 
+    with _session_lock:
+        cached = _session_cache
+    if cached and cached[0] == fingerprint:
+        return cached[1]
+
     composio = _client()
     existing = _load_session_record()
     if (
@@ -140,7 +201,10 @@ def get_session(cfg: dict | None = None):
         and existing.get("toolkits") == toolkits
     ):
         try:
-            return composio.use(existing["session_id"])
+            session = composio.use(existing["session_id"])
+            with _session_lock:
+                globals()["_session_cache"] = (fingerprint, session)
+            return session
         except Exception:
             pass
 
@@ -156,6 +220,8 @@ def get_session(cfg: dict | None = None):
             kwargs["connected_accounts"] = connected
     session = composio.create(**kwargs)
     _save_session_record({**fingerprint, "session_id": session.session_id})
+    with _session_lock:
+        globals()["_session_cache"] = (fingerprint, session)
     return session
 
 
@@ -184,12 +250,49 @@ def _result_text(result) -> str:
         return str(data)[:8000]
 
 
-def fetch_inbox(max_results: int = 5) -> list[dict]:
+# GMAIL_FETCH_EMAILS is the slowest call Max makes — measured 7.64s, all
+# of it upstream. A short TTL is the difference between "check my email"
+# being usable and being something you stop asking for. Kept deliberately
+# short: mail arriving is the whole point, so this trades at most a
+# minute of staleness, and a prefetch means the common case is served
+# from memory anyway.
+_INBOX_TTL_SECONDS = 60
+_inbox_cache: tuple[float, int, list[dict]] | None = None
+_inbox_lock = threading.Lock()
+
+
+def prefetch_inbox() -> None:
+    """Pull the inbox in the background so the first ask is not the wait."""
+    try:
+        fetch_inbox()
+    except Exception as e:
+        print(f"[composio] inbox prefetch skipped ({type(e).__name__}: {e})", flush=True)
+
+
+def fetch_inbox(max_results: int = 5, force: bool = False) -> list[dict]:
     """Recent inbox rows. Deterministic — no model, so it cannot invent."""
+    global _inbox_cache
+    if not force:
+        with _inbox_lock:
+            cached = _inbox_cache
+        if (cached and cached[1] >= max_results
+                and (time.monotonic() - cached[0]) < _INBOX_TTL_SECONDS):
+            return cached[2][:max_results]
+    rows = _fetch_inbox_uncached(max_results)
+    with _inbox_lock:
+        _inbox_cache = (time.monotonic(), max_results, rows)
+    return rows
+
+
+def _fetch_inbox_uncached(max_results: int = 5) -> list[dict]:
     session = get_session()
     try:
         result = session.execute("GMAIL_FETCH_EMAILS", arguments={"max_results": max_results})
     except Exception as e:
+        # The account list is cached for 5 minutes; if a call fails, that
+        # cache is the first thing that could be stale (revoked token,
+        # reconnected account), so drop it and let the next try re-check.
+        refresh_accounts()
         raise ComposioError(f"GMAIL_FETCH_EMAILS failed: {e}") from e
     if getattr(result, "error", None):
         raise ComposioError(str(result.error))
@@ -361,6 +464,78 @@ def _execute(session, slug: str, args: dict) -> str:
     if err:
         raise ComposioError(str(err))
     return slug
+
+
+def calendar_window(user_text: str, now: datetime | None = None):
+    """(start, end, label) for what the user actually asked about.
+
+    "tomorrow" means tomorrow, not "the next 48 hours starting now" —
+    that window included today's events and then announced them as
+    tomorrow's, which is the kind of confidently mislabelled answer this
+    project keeps having to stamp out.
+    """
+    now = now or datetime.now().astimezone()
+    lowered = (user_text or "").lower()
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if "tomorrow" in lowered:
+        start = midnight + timedelta(days=1)
+        return start, start + timedelta(days=1), "tomorrow"
+    if "week" in lowered:
+        return now, midnight + timedelta(days=8), "this week"
+    if "today" in lowered or "day" in lowered:
+        return now, midnight + timedelta(days=1), "today"
+    return now, midnight + timedelta(days=1), "today"
+
+
+def list_calendar_events(user_text: str = "") -> str:
+    """Upcoming events, spoken. Google Calendar via Composio.
+
+    Faster AND more correct than the AppleScript path it replaces:
+    measured 1.04s against 5.58s, and Calendar.app was answering "No
+    events found" for a day that had real entries in Google Calendar,
+    because the account is synced there and not into a local calendar
+    Calendar.app was scanning.
+    """
+    session = get_session()
+    start, end, label = calendar_window(user_text)
+    try:
+        result = session.execute("GOOGLECALENDAR_EVENTS_LIST", arguments={
+            "calendarId": "primary",
+            "maxResults": 10,
+            "singleEvents": True,
+            "orderBy": "startTime",
+            "timeMin": start.isoformat(),
+            "timeMax": end.isoformat(),
+        })
+    except Exception as e:
+        refresh_accounts()
+        raise ComposioError(f"calendar list failed: {e}") from e
+    if getattr(result, "error", None):
+        raise ComposioError(str(result.error))
+    data = getattr(result, "data", result) or {}
+    items = data.get("items") or []
+    return _events_speech(items, label)
+
+
+def _events_speech(items: list[dict], window: str) -> str:
+    if not items:
+        return f"Nothing on your calendar {window}."
+    bits = []
+    for ev in items[:5]:
+        title = _speakable(ev.get("summary") or "Untitled")
+        start = (ev.get("start") or {})
+        raw = start.get("dateTime") or start.get("date") or ""
+        when = ""
+        try:
+            if "T" in raw:
+                when = datetime.fromisoformat(raw).strftime("%a %I:%M %p").replace(" 0", " ")
+            elif raw:
+                when = datetime.fromisoformat(raw).strftime("%a") + ", all day"
+        except ValueError:
+            when = ""
+        bits.append(f"{title} {when}".strip() if when else title)
+    lead = f"{len(items)} on your calendar {window}." if len(items) > 1 else f"One thing {window}."
+    return lead + " " + "; ".join(bits) + "."
 
 
 def search_person(name: str) -> list[str]:

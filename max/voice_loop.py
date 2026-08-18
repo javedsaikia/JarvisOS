@@ -29,7 +29,7 @@ import sounddevice as sd
 from faster_whisper import WhisperModel
 from openwakeword.model import Model as WakeWordModel
 
-from max import cli, control, hotkey, llm, sarvam_client, speech, voice_events, wake_phrase
+from max import cli, composio_client, control, hotkey, llm, sarvam_client, speech, voice_events, wake_phrase
 from max.config import load_config
 from max.memory import MemoryStore
 from max.tools import spotify
@@ -1503,6 +1503,10 @@ class VoiceLoop:
 
     def run(self) -> None:
         mem = MemoryStore()
+        # Same reason as the bridge: the Composio session costs ~2.9s to
+        # build, and it should not be built while the user is waiting for
+        # their first answer.
+        threading.Thread(target=composio_client.warm, daemon=True).start()
         wake_label = self.wake_label()
         first_start = True
         # Chosen explicitly rather than left to sd.default.device, which
