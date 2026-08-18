@@ -261,12 +261,37 @@ def select_region(timeout: int = 45) -> dict | None:
     return data
 
 
-def capture_region(x: float, y: float, w: float, h: float) -> bytes:
+def _downscale_jpeg(path: str, max_width: int) -> bytes:
+    """Shrink a JPEG on disk with `sips`, returning the bytes, or b"".
+
+    sips rather than Quartz here because the file already exists on disk —
+    this is one subprocess against decoding and re-encoding by hand, and
+    it is the same tool the OS uses.
+    """
+    try:
+        result = subprocess.run(
+            ["sips", "-Z", str(int(max_width)), path],
+            capture_output=True, timeout=15,
+        )
+        if result.returncode != 0:
+            return b""
+        return Path(path).read_bytes()
+    except (subprocess.TimeoutExpired, OSError):
+        return b""
+
+
+def capture_region(x: float, y: float, w: float, h: float, max_width: int = 0) -> bytes:
     """JPEG of one rectangle of the screen, in global top-left points.
 
     Uses `screencapture -R`, which takes exactly these coordinates, rather
     than cropping a full capture: no scale-factor arithmetic to get wrong
     on a Retina display, and it grabs a fraction of the pixels.
+
+    `max_width` matters when the result is going to a vision model. On a
+    Retina display this returns the full backing-store resolution, so a
+    "smaller" crop of one window came out at 370KB against 121KB for the
+    whole screen downscaled — and the request timed out twice on a chess
+    board that answers in seconds at 1024px.
     """
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
         path = f.name
@@ -284,6 +309,8 @@ def capture_region(x: float, y: float, w: float, h: float) -> bytes:
         data = Path(path).read_bytes()
         if not data:
             raise ScreenCaptureError("that region came back empty")
+        if max_width:
+            data = _downscale_jpeg(path, max_width) or data
         return data
     except subprocess.TimeoutExpired as e:
         raise ScreenCaptureError("screencapture timed out") from e

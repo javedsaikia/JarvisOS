@@ -163,8 +163,21 @@ _GUIDE_RE = re.compile(
 )
 
 
+# "Show me the bold button" is short and imperative. A paragraph is
+# someone talking, and any long stretch of speech will contain "show" or
+# "guide" or "view" eventually. Seen live during a demo: a 100-word
+# spoken introduction ("...it can view the screen and it can guide the
+# user...") tripped this, and the reply opened with three invented
+# pointer cues — 'This is "View", the top left. This is "it Max" then the
+# command", the bottom right.'
+_GUIDE_MAX_WORDS = 25
+
+
 def _is_guide(question: str) -> bool:
-    return bool(_GUIDE_RE.search(question or ""))
+    text = question or ""
+    if len(text.split()) > _GUIDE_MAX_WORDS:
+        return False
+    return bool(_GUIDE_RE.search(text))
 
 
 # Last OCR + labels we already named, so "show me" / "point at that"
@@ -546,6 +559,17 @@ def _region_phrase(line: dict) -> str:
     if down == "the middle":
         return f"the {across} side"
     return f"the {down} {across}"
+
+
+def _small_capture(cfg: dict, fallback: bytes) -> bytes:
+    """A re-capture sized for a vision model, or the original if that fails."""
+    try:
+        image, _ = screen_capture.capture(
+            hud_marker=cfg.get("screen_hud_window_marker", "Max HUD"), max_width=1024)
+        return image or fallback
+    except Exception as e:
+        _log(f"could not re-capture small ({e}) — sending the full image")
+        return fallback
 
 
 def _mark_described_window(meta: dict) -> None:
@@ -956,7 +980,13 @@ _ADVICE_RE = re.compile(
     # "can you help me with the next move?" — the phrasing actually used,
     # which matched nothing here and fell through to the how-to path,
     # where it asked a text model about a chess board it could not see.
-    r"help me (?:with |on )?(?:the |my |this |a )?(?:next |best )?move|"
+    # Every one of these is a phrasing that was actually said to Max and
+    # matched nothing, falling through to the how-to path where a text
+    # model was asked about a board it could not see. The verb varies far
+    # more than the noun does, so the noun is what anchors this.
+    r"(?:help me|helping me)\s+(?:to\s+)?(?:\w+\s+){0,3}?(?:next |best |good )?move|"
+    r"(?:identify|find|pick|choose|work out|figure out|tell me)\s+"
+    r"(?:\w+\s+){0,3}?(?:next |best |good )?move|"
     r"(?:suggest|recommend|give me) (?:a |the |my )?(?:next |best )?move|"
     r"my (?:next|best) move|"
     r"help me (?:with )?(?:this|here|out)|"
@@ -995,7 +1025,7 @@ def advise_screen(question: str, cfg: dict) -> str:
     bounds = screen_capture.frontmost_window_bounds(app)
     if bounds:
         try:
-            cropped = screen_capture.capture_region(*bounds)
+            cropped = screen_capture.capture_region(*bounds, max_width=1024)
             if cropped:
                 image = cropped
                 _log(f"advising on the {app} window, not the whole desktop")
@@ -1275,7 +1305,12 @@ def describe_screen(
     _log("little text on screen — looking at the image instead of the text")
     try:
         started = time.monotonic()
-        answer = llm.look(prompt, jpeg, cfg)
+        # The OCR copy is full resolution (3456x2234 here) because OCR
+        # wants every pixel. A vision model does not, and sending it that
+        # made the request time out at 45s — after which the local
+        # fallback ran for 51s and took speech-to-text with it. Same
+        # 1024px the advice path uses, for the same measured reason.
+        answer = llm.look(prompt, _small_capture(cfg, jpeg), cfg)
         _log(f"answered from the vision model in {time.monotonic() - started:.2f}s")
         return spoken(answer)
     except llm.LLMError as e:

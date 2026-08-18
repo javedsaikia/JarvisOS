@@ -515,7 +515,26 @@ def c_screen_surfaces():
     assert "show_marker" in marker, "the pointer is not the overlay marker"
     assert "glide_cursor" not in marker and "point_cursor" not in marker, \
         "this would move the user's real mouse on every screen question"
-    return "panel + overlay pointer"
+
+    # Images going to a vision model must be downscaled. Sending the full
+    # 3456x2234 capture timed the request out at 45s, after which the
+    # local fallback ran for 51s and took speech-to-text with it.
+    for call in ("capture_region(*bounds, max_width=1024)", "_small_capture(cfg, jpeg)"):
+        assert call in src, f"a vision call is sending a full-size image: {call}"
+    lsrc = (ROOT / "max" / "llm.py").read_text()
+    look = ast.get_source_segment(
+        lsrc, next(n for n in ast.parse(lsrc).body
+                   if isinstance(n, ast.FunctionDef) and n.name == "look"))
+    assert "_look_local" not in look.split("except LLMError as e:")[-1], \
+        "a failed cloud call falls back to the CPU-saturating local model again"
+    assert "retrying once" in look, "a single stalled request loses the turn again"
+
+    # Long speech is not a request to point at something. A 76-word demo
+    # introduction produced three invented pointer cues.
+    from max.tools import vision as v
+    assert not v._is_guide(" ".join(["it can guide the user and show the view"] * 12))
+    assert v._is_guide("show me the bold button")
+    return "panel + overlay pointer, downscaled, retried"
 
 
 @check("nothing competes with the microphone")

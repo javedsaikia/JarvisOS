@@ -255,7 +255,7 @@ def _gemini_payload(messages):
     return payload
 
 
-def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 45) -> str:
+def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 14) -> str:
     """Ask a vision model about an actual screenshot.
 
     Every other path here works from OCR text, which is the right tool for
@@ -293,13 +293,30 @@ def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 45) -> str:
     }
     url = f"{GEMINI_URL}/{model}:generateContent?key={key}"
     try:
-        with _post(url, body, {}, timeout) as response:
-            data = json.loads(response.read())
+        try:
+            with _post(url, body, {}, timeout) as response:
+                data = json.loads(response.read())
+        except LLMError as first:
+            # Measured on three identical requests seconds apart: 27s
+            # timeout, then 4.2s, then 3.7s. The typical call is under five
+            # seconds and the occasional one stalls, so one retry converts
+            # a lost turn into a slightly slow one. Only for timeouts — a
+            # 400 or a bad key will fail identically however many times it
+            # is sent.
+            if "timed out" not in str(first):
+                raise
+            print("[llm] Gemini vision stalled — retrying once", flush=True)
+            with _post(url, body, {}, timeout) as response:
+                data = json.loads(response.read())
     except LLMError as e:
-        # A dead key should not mean Max cannot look at all — there is a
-        # vision model on this machine.
-        print(f"[llm] Gemini vision unavailable ({e}) — using the local one", flush=True)
-        return _look_local(prompt, image_png, cfg, timeout)
+        # NOT a fallback to the local model. Measured live during a demo:
+        # Gemini timed out at 45s, the local model then ran for 51s, and
+        # speech-to-text on the next utterance took 47.40s because they
+        # share this CPU. The "helpful" fallback turned one slow answer
+        # into two minutes of an assistant that had gone deaf. A key is
+        # configured, so the honest move is to say the call failed.
+        print(f"[llm] Gemini vision failed ({e})", flush=True)
+        raise
     text = _gemini_text(data).strip()
     if not text:
         raise LLMError(f"{model} returned nothing for the screenshot")
