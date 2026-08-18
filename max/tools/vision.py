@@ -964,12 +964,25 @@ def advise_screen(question: str, cfg: dict) -> str:
     image, facts = screen_capture.capture(
         hud_marker=cfg.get("screen_hud_window_marker", "Max HUD"), max_width=1024)
     app = facts.get("frontmost") or session_app() or "this app"
+    # Prefer just the window they are working in. The desktop around it is
+    # noise the model will otherwise narrate back at them.
+    bounds = screen_capture.frontmost_window_bounds(app)
+    if bounds:
+        try:
+            cropped = screen_capture.capture_region(*bounds)
+            if cropped:
+                image = cropped
+                _log(f"advising on the {app} window, not the whole desktop")
+        except Exception as e:
+            _log(f"window crop failed ({e}) — using the full screen")
     prompt = (
         f"You are Max, looking over the shoulder of someone using {app} on a Mac.\n"
         f"They asked: {question}\n\n"
         "Look at the screenshot and answer from what you can actually see.\n"
         "- Be specific about what is on screen. Name real things you can see.\n"
-        "- If it is a game, say what you would play and why, in one line.\n"
+        "- If it is a game, say what you would play and why, in one line. Name "
+        "the move the way a person says it out loud — \"knight to f3\", not "
+        "\"Nf3\" and not \"the third square on the right\".\n"
         "- Two or three short sentences, spoken aloud, no markdown.\n"
         "- If you genuinely cannot make out the detail you would need, say "
         "so plainly instead of guessing."

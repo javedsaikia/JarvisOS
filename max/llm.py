@@ -35,6 +35,15 @@ from max import env, ollama_client
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
+# The vision model for looking at the screen. NOT gemini-2.0-flash, which
+# this project defaulted to for months and which now answers "no longer
+# available to new users" — a default that fails closed on a live key is
+# worse than no default. Verified against the key in use: gemini-2.5-flash
+# and 2.5-pro are also retired for new users; gemini-3-flash-preview reads
+# an actual chess position correctly, and the 3.1-lite models do not (they
+# answer "play e4" on a board where e4 has already been played).
+DEFAULT_VISION_MODEL = "gemini-3-flash-preview"
+
 # Which .env key each provider needs. A provider whose key is missing is
 # still listed in the dashboard, marked unavailable, so the reason a model
 # can't be picked is visible rather than mysterious.
@@ -264,7 +273,7 @@ def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 45) -> str:
     key = _api_key("gemini")
     if not key:
         return _look_local(prompt, image_png, cfg, timeout)
-    model = cfg.get("screen_cloud_model") or "gemini-2.0-flash"
+    model = cfg.get("screen_cloud_model") or DEFAULT_VISION_MODEL
     body = {
         "contents": [{
             "role": "user",
@@ -274,6 +283,13 @@ def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 45) -> str:
                                  "data": base64.b64encode(image_png).decode("ascii")}},
             ],
         }],
+        # Gemini 3 thinks before answering and bills the wait to the user.
+        # Measured on a real chess position, same screenshot, same
+        # question: default 5.9s but 22-51s when the service is busy,
+        # thinkingLevel=low 46.7s, thinkingBudget=0 4.0s — and all three
+        # returned the SAME move with the same reasoning. The thinking was
+        # buying nothing here and costing everything, so it is off.
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
     }
     url = f"{GEMINI_URL}/{model}:generateContent?key={key}"
     try:

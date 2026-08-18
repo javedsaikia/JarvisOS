@@ -206,7 +206,7 @@ DEFAULTS = {
     # sensitive thing this machine can send anywhere. Needs GEMINI_API_KEY
     # in max/.env.
     "screen_cloud_fallback": False,
-    "screen_cloud_model": "gemini-2.0-flash",
+    "screen_cloud_model": "gemini-3-flash-preview",
     # Locally installed model that accepts images, for when there is no
     # Gemini key. Blank means "find one" — anything with moondream/llava/
     # vl/vision in its name. It genuinely sees the pixels, but it is small:

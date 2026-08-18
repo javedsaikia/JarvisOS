@@ -106,6 +106,26 @@ def list_windows() -> list[dict]:
     return windows
 
 
+def frontmost_window_bounds(app: str = "") -> tuple[float, float, float, float] | None:
+    """(x, y, w, h) of the frontmost real window, or None.
+
+    For questions about the thing someone is working in, the rest of the
+    desktop is noise: asked what to play next, the model opened with "I
+    see your chess board on top of some code in VS Code" — accurate, and
+    not what was asked. Layer 0 only, so the menu bar and Dock are not
+    mistaken for the window.
+    """
+    candidates = [
+        w for w in list_windows()
+        if w["layer"] == 0 and w["w"] >= 200 and w["h"] >= 200
+        and (not app or w["app"].lower() == app.lower())
+    ]
+    if not candidates:
+        return None
+    w = candidates[0]
+    return w["x"], w["y"], w["w"], w["h"]
+
+
 def has_permission() -> bool:
     """True when this process may capture other apps' pixels.
 
