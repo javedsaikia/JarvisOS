@@ -31,7 +31,7 @@ import re
 import threading
 import time
 
-from max import llm
+from max import control, llm
 
 # Reflect once there are this many new turns, or this long after the last
 # reflection with at least a couple of turns to look at. Both are needed:
@@ -361,6 +361,16 @@ def maybe_reflect_async(mem, cfg: dict) -> None:
         return
 
     def run():
+        # The timer is armed when a turn ENDS, so nothing pushes it out
+        # while the user is mid-sentence — wake heard, recording, Whisper
+        # running, no completed turn yet. Seen live: reflection started
+        # during a conversation and the next utterance took 28.55s to
+        # transcribe. Activity is marked as soon as a wake is heard, so
+        # this catches the case the timer cannot.
+        idle = control.seconds_since_activity()
+        if idle < IDLE_DELAY_SECONDS:
+            _arm(IDLE_DELAY_SECONDS - idle, run)
+            return
         if not _running.acquire(blocking=False):
             return
         try:
@@ -374,11 +384,15 @@ def maybe_reflect_async(mem, cfg: dict) -> None:
         finally:
             _running.release()
 
+    _arm(IDLE_DELAY_SECONDS, run)
+
+
+def _arm(delay: float, run) -> None:
     global _pending_timer
     with _timer_lock:
         if _pending_timer is not None:
             _pending_timer.cancel()
-        _pending_timer = threading.Timer(IDLE_DELAY_SECONDS, run)
+        _pending_timer = threading.Timer(max(1.0, delay), run)
         _pending_timer.daemon = True
         _pending_timer.start()
 

@@ -1702,6 +1702,11 @@ class VoiceLoop:
             listening_banner = "(Wake word detected — listening...)"
         turn_start = time.perf_counter()
         wake_detected_at = time.perf_counter()
+        # Marked HERE, at the wake, not when the turn finishes. Background
+        # reflection arms its timer on turn end, so nothing pushed it out
+        # while the user was mid-sentence — and a 7B model starting then
+        # took the next transcription from 0.73s to 28.55s.
+        control.note_activity()
         print(listening_banner)
         if not already_in_conversation:
             # Quiet the music for the whole conversation before cueing the

@@ -933,6 +933,12 @@ _ADVICE_RE = re.compile(
     r"what(?:'s| is| should)?\s+(?:my|the|your)?\s*(?:next|best)\s+move|"
     r"what should i (?:do|play|move)|what do i do (?:now|next)|"
     r"which (?:move|one) should i|"
+    # "can you help me with the next move?" — the phrasing actually used,
+    # which matched nothing here and fell through to the how-to path,
+    # where it asked a text model about a chess board it could not see.
+    r"help me (?:with |on )?(?:the |my |this |a )?(?:next |best )?move|"
+    r"(?:suggest|recommend|give me) (?:a |the |my )?(?:next |best )?move|"
+    r"my (?:next|best) move|"
     r"help me (?:with )?(?:this|here|out)|"
     r"any (?:advice|suggestion|idea)|what would you (?:do|play)|"
     r"analy[sz]e (?:this|it|the (?:board|position|screen))|"
@@ -1224,12 +1230,20 @@ def describe_screen(
 
     # Little or no text: a photo, a video, a design. That is what the
     # vision model is actually good at.
-    _log("little text on screen — using the local vision model instead")
+    # llm.look picks the cloud vision model when a key is configured and
+    # the local one only when it is not. That ordering matters for more
+    # than quality: the local model saturates this machine's CPU, and the
+    # speech recogniser shares it. Measured in one conversation while
+    # moondream was running, STT went from 0.73s to 28.55s and the voice
+    # loop printed "something else is using the CPU" itself.
+    _log("little text on screen — looking at the image instead of the text")
     try:
         started = time.monotonic()
-        answer = _ask_vision_model(jpeg, prompt, cfg)
+        answer = llm.look(prompt, jpeg, cfg)
         _log(f"answered from the vision model in {time.monotonic() - started:.2f}s")
         return spoken(answer)
+    except llm.LLMError as e:
+        raise VisionError(str(e)) from e
     except VisionError:
         if not cfg.get("screen_cloud_fallback", False):
             raise

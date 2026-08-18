@@ -46,6 +46,29 @@ def write(**changes) -> dict:
     return state
 
 
+# A separate, tiny file rather than a key in the control JSON: this is
+# touched on every turn and read by another process, and it must not
+# rewrite (or race) the mic-mute state that the HUD owns.
+BUSY_PATH = Path("/tmp/max_busy")
+
+
+def note_activity() -> None:
+    """Mark the assistant as mid-conversation. Cheap enough to call often."""
+    try:
+        BUSY_PATH.touch()
+        os.utime(BUSY_PATH, None)
+    except OSError:
+        pass
+
+
+def seconds_since_activity() -> float:
+    """How long since the last turn. A large number when nothing is going on."""
+    try:
+        return max(0.0, time.time() - BUSY_PATH.stat().st_mtime)
+    except OSError:
+        return 1e9
+
+
 def mic_muted() -> bool:
     return bool(read().get("mic_muted"))
 

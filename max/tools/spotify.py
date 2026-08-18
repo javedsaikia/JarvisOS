@@ -402,7 +402,14 @@ MUSIC_FOLLOWUP_SECONDS = 180.0
 _NOT_A_TITLE_RE = re.compile(
     r"^\s*(?:how|what|why|who|when|where|which|is|are|was|were|do|does|did|"
     r"can|could|will|would|should|shall|hey|hi|hello|thanks|thank|sorry|"
-    r"yes|yeah|no|nope|ok|okay|stop|pause|max)\b|\?",
+    r"yes|yeah|no|nope|ok|okay|stop|pause|max|and|but|so|because)\b|\?|"
+    # A statement about the speaker is never a song title. Seen live:
+    # "and I am using the white one" — said about a chess game, half an
+    # hour after a song played — was claimed by this window and answered
+    # "I didn't catch the song." The music window is long; ordinary
+    # conversation happens inside it constantly.
+    r"\b(?:i am|i'?m|i was|i have|i'?ve|i want|i will|i'?ll|i think|"
+    r"we are|we'?re|you are|you'?re|it is|it'?s|that'?s|there'?s)\b",
     re.IGNORECASE,
 )
 # A title-shaped fragment: words, apostrophes and ampersands, nothing that

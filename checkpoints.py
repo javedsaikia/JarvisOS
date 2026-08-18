@@ -494,6 +494,45 @@ def c_named_city():
     return "Guwahati via 4 phrasings, 3 handlers, 3 local kept"
 
 
+@check("nothing competes with the microphone")
+def c_cpu_contention():
+    from max import control, reflection
+    from max.tools import spotify, vision
+
+    # A local 7B reflection starting mid-conversation took the next
+    # transcription from 0.73s to 28.55s. The timer arms on turn END, so
+    # activity is marked at the WAKE, and reflection re-checks it.
+    control.note_activity()
+    assert control.seconds_since_activity() < 2, "activity marker did not record"
+    src = (ROOT / "max" / "reflection.py").read_text()
+    assert "seconds_since_activity" in src, \
+        "reflection no longer checks whether a conversation is in progress"
+    assert "control.note_activity()" in (ROOT / "max" / "voice_loop.py").read_text(), \
+        "the voice loop no longer marks activity at the wake"
+    # The local vision model is the other CPU hog: prefer the cloud one.
+    vsrc = (ROOT / "max" / "tools" / "vision.py").read_text()
+    assert "_ask_vision_model(jpeg, prompt, cfg)" not in vsrc, \
+        "the low-text screen path is back on the local vision model"
+
+    # Asking for help with a move must reach the screen, not the how-to
+    # path — which asked a text model about a board it could not see.
+    for text in ("can you help me with the next move?", "what should my next move be",
+                 "suggest a move", "my next move"):
+        assert vision.is_advice_request(text), f"not routed to advice: {text!r}"
+    for text in ("how do I bold this", "what is on my screen", "how are you"):
+        assert not vision.is_advice_request(text), f"over-claimed as advice: {text!r}"
+
+    # A sentence about yourself is not a song title, however recently
+    # music played. "and I am using the white one" got "I didn't catch
+    # the song."
+    spotify.note_music_turn()
+    for text in ("and I am using the white one", "I am playing white", "it's my turn now"):
+        assert not spotify.looks_like_followup(text), f"claimed as a song: {text!r}"
+    for text in ("by Metallica", "Anuradha", "Bohemian Rhapsody"):
+        assert spotify.looks_like_followup(text), f"real follow-up lost: {text!r}"
+    return "reflection gated, 4 advice, 6 song"
+
+
 @check("compose guards")
 def c_compose():
     from max import compose
@@ -657,7 +696,7 @@ def c_voice():
 
 STATIC = [c_compile, c_imports, c_pyflakes, c_dead, c_leftovers,
           c_router_handlers, c_protocol, c_config, c_routes, c_speech,
-          c_tts_hang, c_timeouts, c_panel, c_calendar, c_no_fabrication, c_named_city,
+          c_tts_hang, c_timeouts, c_panel, c_calendar, c_no_fabrication, c_named_city, c_cpu_contention,
           c_compose, c_overlays, c_voice]
 LIVE = [c_services, c_models, c_ttfw, c_latency]
 
