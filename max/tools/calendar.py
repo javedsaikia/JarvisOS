@@ -90,3 +90,46 @@ return "ok"
 """
     run(script, app_name="Calendar")
     return f'Added "{title}" to your calendar for {start.strftime("%a %b %d, %I:%M %p")}.'
+
+
+# The last event Max created, so it can be taken back out. Adding no
+# longer asks for a yes/no first — that round trip cost more than the
+# 1.14s write it guarded — so an undo is what keeps a misheard event
+# cheap to fix. Process-local on purpose: "remove that" means the one
+# just added, not something from last week.
+_last_added: tuple[str, datetime] | None = None
+
+
+def remember_last_added(title: str, start: datetime) -> None:
+    global _last_added
+    _last_added = (title, start)
+
+
+def remove_last_added() -> str:
+    """Delete the event Max most recently created."""
+    global _last_added
+    if not _last_added:
+        return "I haven't added anything yet."
+    title, start = _last_added
+    script = f"""
+{_date_setters("evStart", start)}
+tell application "Calendar"
+    set removed to 0
+    repeat with c in calendars
+        set matches to (every event of c whose summary is {as_string(title)})
+        repeat with e in matches
+            if start date of e is evStart then
+                delete e
+                set removed to removed + 1
+            end if
+        end repeat
+    end repeat
+    reload calendars
+    return removed as string
+end tell
+"""
+    count = (run(script, app_name="Calendar") or "").strip()
+    _last_added = None
+    if count in ("", "0"):
+        return f'I couldn\'t find "{title}" to remove — it may already be gone.'
+    return f'Removed "{title}" from your calendar.'

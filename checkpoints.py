@@ -383,7 +383,35 @@ def c_calendar():
     assert filled and f"{filled:%b %d %H:%M}" == "Aug 18 13:00", f"slot filled to {filled}"
     assert event_draft.title() == "Meeting with 11 labs", "the time reply overwrote the title"
     event_draft.cancel()
-    return "6 confirms, 4 events, slot fill"
+
+    # Dictation fillers must not become the title. "can you go ahead and
+    # add in meeting?" titled itself "go ahead and add in meeting" and
+    # then asked 'What time is "go ahead and add in meeting"?', which is
+    # what "it is literally clueless" sounded like from the outside.
+    for text in ("can you go ahead and add in meeting?", "go ahead and add a meeting",
+                 "can you add in a meeting"):
+        got, _, _ = parsing.extract_event(text, now)
+        assert got == "Meeting", f"{text!r} titled {got!r}"
+
+    # Adding must not cost a yes/no round trip: the write is ~1s and the
+    # confirm was several times that. The undo is what makes that safe,
+    # so it has to exist and has to be reachable.
+    from max import cli, router
+    src = (ROOT / "max" / "cli.py").read_text()
+    body = ast.get_source_segment(
+        src, next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "handle_tool"))
+    assert "confirm_calendar_writes" in body, "calendar adds went back to confirming by default"
+    assert not cli.load_config().get("confirm_calendar_writes", False), \
+        "confirm_calendar_writes is on, so adding costs an extra turn"
+    for text in ("remove that meeting", "delete that", "undo that"):
+        assert router.detect_tool(text) == ("calendar_undo", "auto"), \
+            f"no undo route for {text!r}: {router.detect_tool(text)}"
+    # The question is spoken, so it stays short.
+    event_draft.start("Meeting", timedelta(hours=1))
+    assert event_draft.question() == "What time?", event_draft.question()
+    event_draft.cancel()
+    return "6 confirms, 7 events, undo, no-confirm add"
 
 
 @check("no answers invented in place of a tool")

@@ -1622,9 +1622,24 @@ def handle_tool(
 
             end = start + duration
             when = start.strftime("%a %b %d, %I:%M %p")
-            if not _confirm_write(interactive, cfg, f'Add "{title}" to your calendar for {when}?', confirm_fn):
-                return "(Cancelled — nothing added.)"
-            return calendar.add_event(title, start, end)
+            # Adding is 1.14s of AppleScript; the yes/no round trip cost
+            # far more than the write it was guarding. A calendar entry is
+            # also the most reversible thing Max writes — it is visible,
+            # it is one line to undo, and Max says exactly what it added.
+            # That is not true of a sent email or a shell command, which
+            # still confirm. Set confirm_calendar_writes to turn it back on.
+            if cfg.get("confirm_calendar_writes", False):
+                if not _confirm_write(interactive, cfg,
+                                      f'Add "{title}" to your calendar for {when}?', confirm_fn):
+                    return "(Cancelled — nothing added.)"
+            added = calendar.add_event(title, start, end)
+            calendar.remember_last_added(title, start)
+            return added
+
+        if domain == "calendar_undo":
+            # The escape hatch that makes adding without a confirmation
+            # safe: a misheard event is one sentence to remove.
+            return calendar.remove_last_added()
 
         if domain == "notes":
             if action == "read":

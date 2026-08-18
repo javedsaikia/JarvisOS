@@ -59,8 +59,16 @@ def note_asked() -> None:
 
 
 def question() -> str:
-    title = (_state or {}).get("title") or "the event"
-    return f'What time is "{title}"?'
+    """Short on purpose — it is spoken, and every word is waiting time.
+
+    Quoting the parsed title back read as confusion rather than a
+    question: with a bad parse it became 'What time is "go ahead and add
+    in meeting"?', which sounds like Max has no idea what was said.
+    """
+    title = (_state or {}).get("title") or ""
+    if title and title.lower() not in ("meeting", "event", "appointment", "call"):
+        return f"What time for {title}?"
+    return "What time?"
 
 
 def apply_time(text: str, now: datetime | None = None) -> datetime | None:

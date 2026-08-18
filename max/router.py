@@ -844,7 +844,18 @@ SHELL_PATTERNS = [
     r"\b(run|execute)\b.*(\s-{1,2}\w|\||&&|;|>)",
 ]
 
+# Undoing the last add. Checked BEFORE the write group, because "remove
+# that meeting" contains "meeting" and would otherwise be read as a
+# request to create one. This is the escape hatch for adding without a
+# yes/no confirmation.
+CALENDAR_UNDO_PATTERNS = [
+    r"\b(remove|delete|cancel|undo|scrap|take (that|it) off)\b.*\b(that|it|event|meeting|appointment|calendar)\b",
+    r"\b(remove|delete|undo) that\b",
+    r"\bthat'?s wrong,? (remove|delete) it\b",
+]
+
 _TOOL_GROUPS = [
+    ("calendar_undo", "auto", [re.compile(p, re.IGNORECASE) for p in CALENDAR_UNDO_PATTERNS]),
     ("calendar", "write", [re.compile(p, re.IGNORECASE) for p in CALENDAR_WRITE_PATTERNS]),
     ("calendar", "read", [re.compile(p, re.IGNORECASE) for p in CALENDAR_READ_PATTERNS]),
     ("notes", "write", [re.compile(p, re.IGNORECASE) for p in NOTES_WRITE_PATTERNS]),

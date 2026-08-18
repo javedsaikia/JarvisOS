@@ -80,6 +80,12 @@ DEFAULTS = {
     #              with no network in the path at all.
     #   "macos"  — always a locally installed voice (`say -v '?'` lists them)
     #   "sarvam" — always Bulbul, for when its voice is worth the wait
+    # Ask "add X to your calendar?" before writing. Off: the write is
+    # about a second and the spoken yes/no cost several times that, and a
+    # calendar entry is the most reversible thing Max writes — "remove
+    # that" takes it straight back out. Email sends and shell commands
+    # still confirm regardless of this.
+    "confirm_calendar_writes": False,
     "tts_engine": "auto",
     # Which provider speaks ENGLISH. Sarvam is bypassed entirely on this
     # path — it stays for Assamese, which is the only thing it is uniquely

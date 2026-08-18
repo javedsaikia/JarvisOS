@@ -91,12 +91,15 @@ _EVENT_POLITE_PREFIX_RE = re.compile(
     r"(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?"
     r"|i\s+(?:want|need|would\s+like)\s+(?:you\s+)?to\s+"
     r"|i\s+want\s+"
+    r"|go\s+ahead\s+(?:and\s+)?"
     r"|let'?s\s+"
     r"|please\s+)+",
     re.IGNORECASE,
 )
 _EVENT_LEADING_TRIGGER_RE = re.compile(
-    r"^(?:please\s+)?(?:add|schedule|create|book|put|set\s+up)\s+"
+    # "add in a meeting" — dictation drops the particle in freely, and
+    # leaving it made the title "in a meeting".
+    r"^(?:please\s+)?(?:add|schedule|create|book|put|set\s+up)\s+(?:in\s+)?"
     r"(?:an?\s+)?(?:new\s+)?(?P<noun>event|meeting|appointment|call)?\s*"
     r"(?:(?P<named>called|titled|named)|(?P<connector>with|about|for))?\s*",
     re.IGNORECASE,
