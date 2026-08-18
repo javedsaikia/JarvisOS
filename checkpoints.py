@@ -534,7 +534,26 @@ def c_screen_surfaces():
     from max.tools import vision as v
     assert not v._is_guide(" ".join(["it can guide the user and show the view"] * 12))
     assert v._is_guide("show me the bold button")
-    return "panel + overlay pointer, downscaled, retried"
+
+    # A rate limit says how long to wait ("Please retry in 14.198461649s")
+    # and the free tier allows 20 requests a MINUTE. A whole turn was
+    # thrown away over a fourteen-second wait, with the generic "I
+    # couldn't read the screen just now" — which is not what happened and
+    # not what to do about it.
+    from max import cli, llm
+    assert "429" in look and "retry_after" in look, \
+        "a rate limit no longer waits out a short window"
+    err = llm.LLMError("HTTP 429: quota. Please retry in 14.19s", status=429, retry_after=14.19)
+    assert err.retry_after == 14.19 and err.status == 429, "retry-after is not parsed"
+    for message, expected in (
+        ("HTTP 429: You exceeded your current quota", "rate limit"),
+        ("no vision model available", "vision model"),
+        ("the API timed out", "in time"),
+        ("HTTP 400: API key not valid", "key"),
+    ):
+        reply = cli._screen_failure_reply(v.VisionError(message))
+        assert expected in reply, f"{message!r} answered {reply!r}"
+    return "panel + pointer, downscaled, retried, 4 named failures"
 
 
 @check("nothing competes with the microphone")

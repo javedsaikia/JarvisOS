@@ -27,6 +27,8 @@ config.json, which is a plain preferences file.
 """
 import base64
 import json
+import re
+import time
 import urllib.error
 import urllib.request
 
@@ -43,6 +45,11 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 # an actual chess position correctly, and the 3.1-lite models do not (they
 # answer "play e4" on a board where e4 has already been played).
 DEFAULT_VISION_MODEL = "gemini-3-flash-preview"
+
+# Longest rate-limit wait worth sitting through rather than telling the
+# user to ask again. The free tier allows 20 requests a minute, so the
+# waits it asks for are seconds, not minutes.
+VISION_RETRY_WAIT_MAX = 20.0
 
 # Which .env key each provider needs. A provider whose key is missing is
 # still listed in the dashboard, marked unavailable, so the reason a model
@@ -66,7 +73,16 @@ ROLES = {
 
 
 class LLMError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None,
+                 retry_after: float = 0.0):
+        super().__init__(message)
+        self.status = status
+        # Seconds the API asked us to wait. Google puts this in the 429
+        # body ("Please retry in 14.198461649s") rather than a header.
+        self.retry_after = retry_after
+
+
+_RETRY_AFTER_RE = re.compile(r"retry in ([\d.]+)\s*s", re.IGNORECASE)
 
 
 def _api_key(provider: str) -> str:
@@ -160,7 +176,12 @@ def _post(url: str, body: dict, headers: dict, timeout: int, stream: bool = Fals
             detail = json.loads(e.read()).get("error", {}).get("message", "")
         except Exception:
             pass
-        raise LLMError(f"HTTP {e.code}{': ' + detail if detail else ''}") from e
+        wait = _RETRY_AFTER_RE.search(detail or "")
+        raise LLMError(
+            f"HTTP {e.code}{': ' + detail if detail else ''}",
+            status=e.code,
+            retry_after=float(wait.group(1)) if wait else 0.0,
+        ) from e
     except urllib.error.URLError as e:
         raise LLMError(f"could not reach the API ({e.reason})") from e
     # A timeout while *reading* the response is raised bare, not wrapped in
@@ -303,9 +324,21 @@ def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 14) -> str:
             # a lost turn into a slightly slow one. Only for timeouts — a
             # 400 or a bad key will fail identically however many times it
             # is sent.
-            if "timed out" not in str(first):
+            #
+            # A 429 is also worth retrying, because the free tier's limit
+            # is 20 requests PER MINUTE and the body says exactly how long
+            # to wait: "Please retry in 14.198461649s". Seen live, a whole
+            # turn was thrown away over a fourteen-second wait. Only when
+            # the wait is short enough that someone would rather have the
+            # answer than the apology.
+            if first.status == 429 and 0 < first.retry_after <= VISION_RETRY_WAIT_MAX:
+                print(f"[llm] Gemini rate-limited — waiting "
+                      f"{first.retry_after:.0f}s and retrying", flush=True)
+                time.sleep(first.retry_after + 0.5)
+            elif "timed out" in str(first):
+                print("[llm] Gemini vision stalled — retrying once", flush=True)
+            else:
                 raise
-            print("[llm] Gemini vision stalled — retrying once", flush=True)
             with _post(url, body, {}, timeout) as response:
                 data = json.loads(response.read())
     except LLMError as e:

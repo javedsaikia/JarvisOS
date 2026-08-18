@@ -1009,13 +1009,30 @@ def handle_screen_advise(user_text: str, cfg: dict) -> str:
         return vision.advise_screen(user_text, cfg)
     except vision.VisionError as e:
         print(f"[screen] advise failed: {e}", flush=True)
-        # Named rather than generic: the usual cause is no vision model
-        # reachable, and "try again" would be wrong advice for that.
-        if "vision model" in str(e):
-            return ("I can't look at the screen properly — there's no vision "
-                    "model available. Set GEMINI_API_KEY in max/.env, or run "
-                    "ollama pull moondream.")
-        return spoken_fail("screen")
+        return _screen_failure_reply(e)
+
+
+def _screen_failure_reply(e: Exception) -> str:
+    """Say what actually went wrong, when it is something the user can act on.
+
+    "I couldn't read the screen just now. Try again." was said after a
+    rate-limit error that reported exactly how long to wait, and after a
+    missing-key error that no amount of trying again would fix. A generic
+    apology for a specific, fixable problem wastes the user's next turn.
+    """
+    text = str(e)
+    if "vision model" in text:
+        return ("I can't look at the screen — there's no vision model "
+                "available. Set GEMINI_API_KEY in max/.env, or run "
+                "ollama pull moondream.")
+    if "429" in text or "quota" in text.lower():
+        return ("I've hit Gemini's rate limit — it's twenty requests a "
+                "minute on the free tier. Give it a moment and ask again.")
+    if "API key not valid" in text or "401" in text:
+        return "Gemini isn't accepting the key in max/.env. It needs replacing."
+    if "timed out" in text:
+        return "Gemini didn't answer in time. Ask me again."
+    return spoken_fail("screen")
 
 
 def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
@@ -1036,7 +1053,7 @@ def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
                                       confirm_fn=confirm_fn)
     except vision.VisionError as e:
         print(f"[screen] failed: {e}", flush=True)
-        return spoken_fail("screen")
+        return _screen_failure_reply(e)
 
 
 def execute_browser_tool(name: str, arguments: dict, cfg: dict, interactive: bool, confirm_fn=text_confirm) -> str:
