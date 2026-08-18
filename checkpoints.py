@@ -553,7 +553,24 @@ def c_screen_surfaces():
     ):
         reply = cli._screen_failure_reply(v.VisionError(message))
         assert expected in reply, f"{message!r} answered {reply!r}"
-    return "panel + pointer, downscaled, retried, 4 named failures"
+    # The panel is tagged with the app it is about and closes when the
+    # user leaves that app. Max answers about the FRONTMOST app and then
+    # speaks for 5-10s, during which the user looks at the HUD — so
+    # without a grace period the card appeared and vanished at once.
+    psrc = (ROOT / "max" / "instruction_panel.py").read_text()
+    assert "MIN_VISIBLE_SECONDS" in psrc, "the panel can vanish the instant focus moves"
+    grace = float(re.search(r"MIN_VISIBLE_SECONDS = ([\d.]+)", psrc).group(1))
+    assert grace >= 15, f"grace period {grace}s is shorter than Max takes to speak"
+    # Same reasoning for the pointer: it is placed before the answer is
+    # spoken, so it has to outlast the speaking.
+    mark = ast.get_source_segment(
+        src, next(n for n in ast.parse(src).body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_mark_described_window"))
+    seconds = float(re.search(r"seconds=([\d.]+)", mark).group(1))
+    assert seconds >= 15, f"the pointer disappears after {seconds}s, before the reply is heard"
+    # Half a JSON object is not an answer. Max read '{"control' aloud.
+    assert 'startswith(("{", "[",' in src, "a truncated JSON reply can be spoken again"
+    return "panel + pointer, downscaled, retried, 4 named failures, grace"
 
 
 @check("nothing competes with the microphone")

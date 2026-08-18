@@ -49,6 +49,9 @@ POLL_SECONDS = 0.25
 # Nothing stays on screen forever, whatever the state file claims — a
 # writer that dies mid-lesson must not strand a panel on the desktop.
 MAX_LIFETIME_SECONDS = 240.0
+# How long a card is safe from the "they switched apps" rule above.
+# Long enough to outlast Max finishing the sentence that goes with it.
+MIN_VISIBLE_SECONDS = 25.0
 
 ACCENT = (0.15, 0.85, 0.95)
 
@@ -215,8 +218,18 @@ class PanelController(Foundation.NSObject):
                 self._shown_at = time.monotonic()
                 self._layout(str(state.get("text") or ""), str(state.get("title") or "MAX"))
                 self._visible = True
-            elif self._for_app and self._frontmost_app() not in ("", self._for_app):
+            elif (self._for_app
+                  and time.monotonic() - self._shown_at > MIN_VISIBLE_SECONDS
+                  and self._frontmost_app() not in ("", self._for_app)):
                 # They left the app this was about — the lesson is over.
+                #
+                # The grace period is the whole reason this works at all.
+                # Max answers about the FRONTMOST app, then speaks, and
+                # speaking takes five to ten seconds — during which the
+                # user looks at the HUD, or the terminal, or anywhere but
+                # the app the card names. Without the delay the panel
+                # appeared and vanished in the same breath, which is
+                # exactly what it was reported doing.
                 wanted = False
             elif time.monotonic() - self._shown_at > float(
                 state.get("seconds") or MAX_LIFETIME_SECONDS

@@ -585,8 +585,13 @@ def _mark_described_window(meta: dict) -> None:
         if not bounds:
             return
         x, y, w, h = bounds
+        # Long enough to still be there when the user looks. The pointer
+        # is placed the moment the answer is computed, but the answer then
+        # has to be synthesized and spoken — measured on this turn,
+        # ttfw=5.75s and speak=10.49s. At five seconds the marker had come
+        # and gone before the user heard the sentence it belonged to.
         screen_capture.show_marker(x + w / 2, y + h / 2,
-                                   label=APP_NAMES.get(app, app), seconds=5.0)
+                                   label=APP_NAMES.get(app, app), seconds=20.0)
     except Exception as e:
         # Never let a decoration break the answer it decorates.
         _log(f"could not place the pointer: {e}")
@@ -942,8 +947,13 @@ def explain_howto(question: str, cfg: dict) -> str:
         except json.JSONDecodeError:
             pass
     if not say:
-        # The model ignored the format. Its prose is still the answer.
-        say = re.sub(r"\s+", " ", raw).strip()
+        # The model ignored the format. Its prose is still the answer —
+        # but only if it IS prose. Seen live, a truncated reply left this
+        # holding '{"control' and Max read that out loud. Half a JSON
+        # object is not an answer, and speaking it is worse than saying
+        # nothing.
+        candidate = re.sub(r"\s+", " ", raw).strip()
+        say = "" if candidate.lstrip().startswith(("{", "[", '"control')) else candidate
     if not say:
         raise VisionError("no answer came back")
 
