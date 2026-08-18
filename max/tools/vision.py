@@ -928,6 +928,67 @@ def explain_howto(question: str, cfg: dict) -> str:
     return say
 
 
+_ADVICE_RE = re.compile(
+    r"\b(?:"
+    r"what(?:'s| is| should)?\s+(?:my|the|your)?\s*(?:next|best)\s+move|"
+    r"what should i (?:do|play|move)|what do i do (?:now|next)|"
+    r"which (?:move|one) should i|"
+    r"help me (?:with )?(?:this|here|out)|"
+    r"any (?:advice|suggestion|idea)|what would you (?:do|play)|"
+    r"analy[sz]e (?:this|it|the (?:board|position|screen))|"
+    r"how (?:am i|are we) doing|am i winning"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_advice_request(text: str) -> bool:
+    """Asking for a judgement about what is on screen, not for a fact."""
+    return bool(_ADVICE_RE.search(text or ""))
+
+
+def advise_screen(question: str, cfg: dict) -> str:
+    """Look at the screen and give an opinion about it.
+
+    Every other screen path reasons over OCR text. That is right for a
+    menu or a document and useless for anything positional: asked what to
+    play next, a text model got 48 lines of OCR from Chess.app that say
+    nothing about where the pieces are, and answered "control the centre
+    and develop your pieces" — true of every chess position ever played.
+
+    This one sends the pixels. 1024px wide because that is what the local
+    vision model can actually read — measured, at 768 it invented a line
+    of C++ that was not on screen, and at full 3456px it returned a
+    fragment of a URN.
+    """
+    image, facts = screen_capture.capture(
+        hud_marker=cfg.get("screen_hud_window_marker", "Max HUD"), max_width=1024)
+    app = facts.get("frontmost") or session_app() or "this app"
+    prompt = (
+        f"You are Max, looking over the shoulder of someone using {app} on a Mac.\n"
+        f"They asked: {question}\n\n"
+        "Look at the screenshot and answer from what you can actually see.\n"
+        "- Be specific about what is on screen. Name real things you can see.\n"
+        "- If it is a game, say what you would play and why, in one line.\n"
+        "- Two or three short sentences, spoken aloud, no markdown.\n"
+        "- If you genuinely cannot make out the detail you would need, say "
+        "so plainly instead of guessing."
+    )
+    try:
+        answer = llm.look(prompt, image, cfg).strip()
+    except llm.LLMError as e:
+        raise VisionError(f"I couldn't get a look at that: {e}") from e
+    answer = re.sub(r"\s+", " ", answer).strip()
+    if not answer:
+        raise VisionError("nothing came back from the screenshot")
+
+    _SESSION["at"] = time.monotonic()
+    card = instructions.build_card([], fallback=answer)
+    if card:
+        instructions.show(card, app=_SESSION.get("raw_app") or app, title="ON SCREEN")
+    return answer
+
+
 def show_pending(cfg: dict) -> str:
     """Point Max's marker at the control that was just offered.
 

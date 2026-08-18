@@ -25,6 +25,7 @@ can see and change at any time, which is a clearer consent model than
 asking per turn. Keys live in max/.env (gitignored), never in
 config.json, which is a plain preferences file.
 """
+import base64
 import json
 import urllib.error
 import urllib.request
@@ -243,6 +244,90 @@ def _gemini_payload(messages):
     if system:
         payload["system_instruction"] = {"parts": [{"text": system}]}
     return payload
+
+
+def look(prompt: str, image_png: bytes, cfg: dict, timeout: int = 45) -> str:
+    """Ask a vision model about an actual screenshot.
+
+    Every other path here works from OCR text, which is the right tool for
+    a menu bar and the wrong one for anything positional. Asked what to
+    play next in Chess.app, a text model got 48 lines of OCR that say
+    nothing about where the pieces are, and answered with the only thing
+    it could: "control the centre and develop your pieces". True of every
+    chess position ever played, and therefore useless.
+
+    Gemini is the vision-capable model already configured here
+    (screen_cloud_model), so this sends it the pixels instead.
+    """
+    if not image_png:
+        raise LLMError("no image to look at")
+    key = _api_key("gemini")
+    if not key:
+        return _look_local(prompt, image_png, cfg, timeout)
+    model = cfg.get("screen_cloud_model") or "gemini-2.0-flash"
+    body = {
+        "contents": [{
+            "role": "user",
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/png",
+                                 "data": base64.b64encode(image_png).decode("ascii")}},
+            ],
+        }],
+    }
+    url = f"{GEMINI_URL}/{model}:generateContent?key={key}"
+    try:
+        with _post(url, body, {}, timeout) as response:
+            data = json.loads(response.read())
+    except LLMError as e:
+        # A dead key should not mean Max cannot look at all — there is a
+        # vision model on this machine.
+        print(f"[llm] Gemini vision unavailable ({e}) — using the local one", flush=True)
+        return _look_local(prompt, image_png, cfg, timeout)
+    text = _gemini_text(data).strip()
+    if not text:
+        raise LLMError(f"{model} returned nothing for the screenshot")
+    return text
+
+
+def local_vision_model(cfg: dict) -> str:
+    """A locally installed model that accepts images, or "" if none is."""
+    configured = (cfg.get("screen_local_vision_model") or "").strip()
+    host = (cfg.get("ollama_host") or "http://localhost:11434").rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as response:
+            installed = {m.get("name", "") for m in json.loads(response.read()).get("models", [])}
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return configured
+    if configured and configured in installed:
+        return configured
+    for name in installed:
+        if any(tag in name.lower() for tag in ("moondream", "llava", "vl", "vision", "bakllava")):
+            return name
+    return ""
+
+
+def _look_local(prompt: str, image_png: bytes, cfg: dict, timeout: int) -> str:
+    """Vision without the network. Small, but it genuinely sees the pixels."""
+    model = local_vision_model(cfg)
+    if not model:
+        raise LLMError(
+            "no vision model available — set GEMINI_API_KEY in max/.env, or "
+            "install one locally with `ollama pull moondream`"
+        )
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "images": [base64.b64encode(image_png).decode("ascii")],
+        "stream": False,
+    }
+    host = (cfg.get("ollama_host") or "http://localhost:11434").rstrip("/")
+    with _post(f"{host}/api/generate", body, {}, timeout) as response:
+        data = json.loads(response.read())
+    text = (data.get("response") or "").strip()
+    if not text:
+        raise LLMError(f"{model} returned nothing for the screenshot")
+    return text
 
 
 def _gemini_text(data) -> str:

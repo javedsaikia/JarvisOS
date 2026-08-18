@@ -207,6 +207,12 @@ DEFAULTS = {
     # in max/.env.
     "screen_cloud_fallback": False,
     "screen_cloud_model": "gemini-2.0-flash",
+    # Locally installed model that accepts images, for when there is no
+    # Gemini key. Blank means "find one" — anything with moondream/llava/
+    # vl/vision in its name. It genuinely sees the pixels, but it is small:
+    # measured, it describes a window accurately at 1024px wide and cannot
+    # read a chess position at all.
+    "screen_local_vision_model": "",
     "vision_ollama_model": "moondream",
     # Isolated Playwright Chromium is not the user's real desktop browser
     # and is not daily computer control. Off unless you turn it on.

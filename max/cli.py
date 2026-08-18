@@ -995,6 +995,29 @@ def handle_screen_show(cfg: dict) -> str:
         return spoken_fail("screen")
 
 
+def handle_screen_advise(user_text: str, cfg: dict) -> str:
+    """"What should my next move be?" — an opinion about what is on screen.
+
+    Separate from handle_screen_howto because the question is different in
+    kind. "How do I bold this" is world knowledge about an application;
+    "what should I play here" is a judgement about THIS board, and can
+    only be answered by looking at it.
+    """
+    if not cfg.get("vision_enabled", True):
+        return "Screen understanding is disabled in config."
+    try:
+        return vision.advise_screen(user_text, cfg)
+    except vision.VisionError as e:
+        print(f"[screen] advise failed: {e}", flush=True)
+        # Named rather than generic: the usual cause is no vision model
+        # reachable, and "try again" would be wrong advice for that.
+        if "vision model" in str(e):
+            return ("I can't look at the screen properly — there's no vision "
+                    "model available. Set GEMINI_API_KEY in max/.env, or run "
+                    "ollama pull moondream.")
+        return spoken_fail("screen")
+
+
 def handle_screen(user_text: str, cfg: dict, interactive: bool = False,
                   confirm_fn=text_confirm) -> str:
     """Read-only — same tier as calendar/notes/email reads, no confirm.
@@ -1713,6 +1736,8 @@ def handle_tool(
                 return handle_screen_howto(user_text, cfg)
             if action == "show":
                 return handle_screen_show(cfg)
+            if action == "advise":
+                return handle_screen_advise(user_text, cfg)
             return handle_screen(user_text, cfg, interactive, confirm_fn)
 
         if domain == "browser":
@@ -2118,7 +2143,13 @@ def process_turn(
             if _DONE_WITH_IT_RE.search(clean_text):
                 vision.clear_pending_show()
                 vision.dismiss_panel()
-            if tool_match is None and _SCREEN_CONTENT_QUESTION_RE.search(clean_text):
+            if tool_match is None and vision.is_advice_request(clean_text):
+                # "What should my next move be?" — a judgement about THIS
+                # screen. OCR cannot answer it: asked over a chess board it
+                # returns text that says nothing about where the pieces
+                # are, and the model fills the gap with generalities.
+                tool_match = ("screen", "advise")
+            elif tool_match is None and _SCREEN_CONTENT_QUESTION_RE.search(clean_text):
                 # "How does the person look?" — about the screen, and only
                 # the screen can answer it. See the pattern for what the
                 # chat model said when this fell through to it.
