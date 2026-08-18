@@ -494,6 +494,30 @@ def c_named_city():
     return "Guwahati via 4 phrasings, 3 handlers, 3 local kept"
 
 
+@check("screen answers raise the panel and the pointer")
+def c_screen_surfaces():
+    src = (ROOT / "max" / "tools" / "vision.py").read_text()
+    body = ast.get_source_segment(
+        src, next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "spoken"))
+    # The card used to be raised only for summaries, so "what's on my
+    # screen" — the one question people actually ask, answered from window
+    # facts with no model call — left the screen blank.
+    assert "instructions.show(" in body, "screen answers no longer raise the panel"
+    assert "_is_summarize(prompt)" not in body.split("instructions.show(")[0].split("card =")[-1], \
+        "the panel is gated on summaries again"
+    assert "_mark_described_window" in body, "screen answers no longer place the pointer"
+    marker = ast.get_source_segment(
+        src, next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_mark_described_window"))
+    # The overlay, never the real cursor: this runs on every screen
+    # question and must not take the mouse out of the user's hand.
+    assert "show_marker" in marker, "the pointer is not the overlay marker"
+    assert "glide_cursor" not in marker and "point_cursor" not in marker, \
+        "this would move the user's real mouse on every screen question"
+    return "panel + overlay pointer"
+
+
 @check("nothing competes with the microphone")
 def c_cpu_contention():
     from max import control, reflection
@@ -696,7 +720,7 @@ def c_voice():
 
 STATIC = [c_compile, c_imports, c_pyflakes, c_dead, c_leftovers,
           c_router_handlers, c_protocol, c_config, c_routes, c_speech,
-          c_tts_hang, c_timeouts, c_panel, c_calendar, c_no_fabrication, c_named_city, c_cpu_contention,
+          c_tts_hang, c_timeouts, c_panel, c_calendar, c_no_fabrication, c_named_city, c_screen_surfaces, c_cpu_contention,
           c_compose, c_overlays, c_voice]
 LIVE = [c_services, c_models, c_ttfw, c_latency]
 

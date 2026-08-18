@@ -548,6 +548,26 @@ def _region_phrase(line: dict) -> str:
     return f"the {down} {across}"
 
 
+def _mark_described_window(meta: dict) -> None:
+    """Put Max's pointer on the window it is talking about.
+
+    Fire-and-forget, and deliberately the overlay rather than the real
+    cursor: this runs on every screen question, and moving someone's mouse
+    while they are working is not a feature.
+    """
+    app = (meta or {}).get("frontmost") or ""
+    try:
+        bounds = screen_capture.frontmost_window_bounds(app)
+        if not bounds:
+            return
+        x, y, w, h = bounds
+        screen_capture.show_marker(x + w / 2, y + h / 2,
+                                   label=APP_NAMES.get(app, app), seconds=5.0)
+    except Exception as e:
+        # Never let a decoration break the answer it decorates.
+        _log(f"could not place the pointer: {e}")
+
+
 def _point_at_front(meta: dict, lines: list[dict], question: str) -> str:
     """Glide the pointer onto each matching control. Returns a spoken cue."""
     pool = lines or _LAST_LINES
@@ -1194,10 +1214,26 @@ def describe_screen(
         # why the card is raised from this one place: hooking the
         # summarize branch alone missed it whenever a file on screen sent
         # the question down the teacher path instead.
-        if _is_summarize(prompt):
-            card = instructions.build_card([], fallback=answer or "")
-            if card:
-                instructions.show(card, app=_SESSION["raw_app"], title="SUMMARY")
+        # The panel comes up for EVERY screen answer, not just summaries.
+        # "What's on my screen" is answered from window facts with no model
+        # call, and that branch never raised a card — so the one question
+        # people actually ask was the one question that left the screen
+        # blank. Title still says what kind of answer it is.
+        card = instructions.build_card([], fallback=answer or "")
+        if card:
+            instructions.show(
+                card,
+                app=_SESSION.get("raw_app") or meta.get("frontmost", ""),
+                title="SUMMARY" if _is_summarize(prompt) else "ON SCREEN",
+            )
+        # And Max's own pointer marks the window it just described, so it
+        # is obvious what "this" refers to. The MARKER, not the real
+        # cursor: show_marker draws an overlay, where glide_cursor would
+        # take the mouse out of the user's hand every time they asked a
+        # question. Skipped when the pointer is already being aimed at a
+        # specific control by _point_at_front, which is more precise.
+        if not pointed:
+            _mark_described_window(meta)
         if pointed and ( _is_guide(prompt) or "pointing" in pointed.lower() or pointed.startswith("This is") ) and pointed not in (answer or ""):
             return f"{pointed} {answer}".strip()
         return answer
