@@ -123,7 +123,12 @@ GENERIC_SCREEN_QUESTIONS = [
         # in between: "what's on my screen" is generic, but "what's the
         # error message on screen" carries a subject and must reach the
         # model, so nothing arbitrary may match in the middle.
-        _LEAD + r"(what'?s|what is)( on| in)?" + _MINE + r" screen" + _TRAIL,
+        # Same manglings the router now accepts (see SCREEN_PATTERNS): if
+        # they reach the screen tool but not this list, they take the slow
+        # model path instead of the instant window-facts answer.
+        _LEAD + r"(what'?s|what is|wat'?s|watch|what son|was)( on| in)?" + _MINE + r" screen" + _TRAIL,
+        _LEAD + r"i watch( on| in)?" + _MINE + r" screen" + _TRAIL,
+        _LEAD + r"what son" + _MINE + r" screen" + _TRAIL,
         _LEAD + r"(describe|read|check|look at|analyse|analyze)" + _MINE + r" screen" + _TRAIL,
         _LEAD + r"what (can |do )?you (see|tell).{0,40}screen" + _TRAIL,
         _LEAD + r"what am i (looking at|seeing)" + _TRAIL,

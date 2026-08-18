@@ -669,7 +669,16 @@ REGION_PATTERNS = [
 # phrasing (unlike browser targets/URLs below), so this is the same
 # "cheap and direct" treatment as calendar/notes/email reads.
 SCREEN_PATTERNS = [
-    r"\bwhat('s| is) on (my |the )?screen\b",
+    # The apostrophe was required, so a plain "whats on my screen" missed.
+    # Whisper also mangles this exact phrase more than any other line said
+    # to Max, because it is said more than any other line — seen live:
+    # "I watch on my screen", which reached the chat model and got "What
+    # would you like to look at?" instead of a screenshot. The manglings
+    # all keep "on my screen"; it is the front of the sentence that goes.
+    r"\b(?:what'?s|what is|wat'?s|watch|what son|was)\s+on\s+(?:my |the )?screen\b",
+    r"^\s*(?:i\s+)?watch\s+on\s+(?:my |the )?screen\b",
+    # "what's on" heard as "what son" — the s migrates onto the next word.
+    r"\bwhat\s+son\s+(?:my |the )?screen\b",
     r"\bwhat (can |do )?you (see|tell).{0,40}(screen|desktop)\b",
     r"\bwhat('s| is) on (this|the) page\b",
     # "Summarize this page" — read what is actually on screen rather than
