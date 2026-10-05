@@ -1,4 +1,4 @@
-// Thin WebSocket client for the Max bridge (max/bridge.py).
+// Thin WebSocket client for the Bella bridge (bella/bridge.py).
 // Mirrors the message protocol exactly — no logic/decisions happen here,
 // just relaying. Routing/cost/confirmation decisions all happen server-side.
 
@@ -53,7 +53,7 @@ export type ServerMessage =
 
 type Listener = (msg: ServerMessage) => void;
 
-export class MaxSocket {
+export class BellaSocket {
   private ws: WebSocket | null = null;
   private listeners: Listener[] = [];
   private url: string;

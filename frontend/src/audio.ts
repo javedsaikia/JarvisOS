@@ -1,6 +1,6 @@
 // Decodes and plays TTS audio the bridge forwards from Piper, and exposes
 // real-time amplitude from a Web Audio AnalyserNode so the orb can react to
-// actual audio energy while Max is speaking (not a fake/synthetic pulse).
+// actual audio energy while Bella is speaking (not a fake/synthetic pulse).
 
 export class AudioPlayer {
   private ctx: AudioContext;
@@ -34,7 +34,7 @@ export class AudioPlayer {
     this.waveArray = new Uint8Array(new ArrayBuffer(this.analyser.fftSize));
   }
 
-  /** Digital gain for HUD-played TTS, 5–100. Same scale as Max's afplay. */
+  /** Digital gain for HUD-played TTS, 5–100. Same scale as Bella's afplay. */
   setVolume(level: number): void {
     const pct = Math.max(5, Math.min(100, level));
     this.gain.gain.value = pct / 100;

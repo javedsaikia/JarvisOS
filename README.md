@@ -1,4 +1,4 @@
-# Max
+# Bella
 
 A cost-optimized personal AI assistant for macOS. Everything defaults to a
 local model (Ollama) and stays local — memory, routing, Calendar/Notes,
@@ -8,43 +8,43 @@ always asks first.
 
 ## Quickstart
 
-Three front ends, same brain underneath (`max/cli.py`'s router → backend
+Three front ends, same brain underneath (`bella/cli.py`'s router → backend
 pipeline):
 
 ```bash
 # Text loop — type, or dictate with Wispr Flow into the terminal prompt
-python3 -m max.cli
+python3 -m bella.cli
 
-# Always-on voice loop — say "Hey Max", no typing at all
-max/.venv/bin/python3 -m max.voice_loop
+# Always-on voice loop — say "Hey Bella", no typing at all
+bella/.venv/bin/python3 -m bella.voice_loop
 
 # Web HUD — after deploy/install_local.sh (Caddy + bridge at login):
-#   http://max.localhost:2015
+#   http://bella.localhost:2015
 # Or two terminals for a Vite dev session:
-max/.venv/bin/python3 -m max.bridge
+bella/.venv/bin/python3 -m bella.bridge
 cd frontend && npm install && npm run dev   # → http://localhost:5173
 ```
 
 Voice from Terminal (Input Monitoring / Screen Recording attach here):
 
 ```bash
-./start_max.sh
+./start_bella.sh
 ```
 
-First run creates `max/config.json` — set `user_name` there. Everything
+First run creates `bella/config.json` — set `user_name` there. Everything
 else has a sensible default; see [Config](#config) below for what's tunable.
 
 **How a request gets handled**, cheapest first — each tier only escalates to
 the next if it doesn't match:
 
-1. **Router keyword match** (`max/router.py`, zero cost, no model call) →
+1. **Router keyword match** (`bella/router.py`, zero cost, no model call) →
    Calendar/Notes (AppleScript), Files (Ollama + tools), or Shell
    (regex-extracted, deterministic — see [File & shell tools](#file--shell-tools))
 2. **Ollama** (`qwen2.5-coder`, local, free) — the default for everything else
 3. **Claude Code** — only for requests that are clearly multi-file
    coding/agentic work, and only after you confirm the handoff
 
-Every reply is labeled with what answered it: `[Max]` (the local model),
+Every reply is labeled with what answered it: `[Bella]` (the local model),
 `[Calendar]`, `[Notes]`, `[Files]`, `[Shell]`, or `[Claude Code]`. The local
 model is labeled by what it is to you rather than by the runtime serving it —
 naming Ollama in the transcript read like a second assistant had replied.
@@ -53,20 +53,20 @@ naming Ollama in the transcript read like a second assistant had replied.
 
 | Path | What it is |
 |---|---|
-| `max/cli.py` | Text loop, router dispatch, confirmation logic |
-| `max/voice_loop.py` | Always-on mic loop (wake word → STT → same pipeline → TTS) |
-| `max/router.py` | Rule-based backend/tool routing, zero token cost |
-| `max/ollama_client.py` | stdlib-only client for local Ollama |
-| `max/claude_handoff.py` | Shells out to the `claude` CLI |
-| `max/memory.py` | Facts + conversation log persistence |
-| `max/persona.py` | Max system prompt — personality, addresses you by name |
-| `max/tts.py` | Piper text-to-speech (synthesize/play split for the web UI — see [Web UI](#web-ui)) |
-| `max/tools/` | Calendar, Notes, files, shell, and the file/shell tool-call registry |
-| `max/screen_capture.py` | Native screen capture (excludes the Max window) + on-device OCR |
-| `max/bridge.py` | WebSocket bridge for the web UI — presentation-layer glue only, zero routing/cost logic of its own |
-| `max/.venv/` | Isolated Python env for Piper/openWakeWord/faster-whisper/websockets (never touches system Python) |
-| `max/config.json` | All settings — see [Config](#config) |
-| `frontend/` | Vite + TypeScript + Three.js web UI — talks only to `max/bridge.py`, never to a model directly |
+| `bella/cli.py` | Text loop, router dispatch, confirmation logic |
+| `bella/voice_loop.py` | Always-on mic loop (wake word → STT → same pipeline → TTS) |
+| `bella/router.py` | Rule-based backend/tool routing, zero token cost |
+| `bella/ollama_client.py` | stdlib-only client for local Ollama |
+| `bella/claude_handoff.py` | Shells out to the `claude` CLI |
+| `bella/memory.py` | Facts + conversation log persistence |
+| `bella/persona.py` | Bella system prompt — personality, addresses you by name |
+| `bella/tts.py` | Piper text-to-speech (synthesize/play split for the web UI — see [Web UI](#web-ui)) |
+| `bella/tools/` | Calendar, Notes, files, shell, and the file/shell tool-call registry |
+| `bella/screen_capture.py` | Native screen capture (excludes the Bella window) + on-device OCR |
+| `bella/bridge.py` | WebSocket bridge for the web UI — presentation-layer glue only, zero routing/cost logic of its own |
+| `bella/.venv/` | Isolated Python env for Piper/openWakeWord/faster-whisper/websockets (never touches system Python) |
+| `bella/config.json` | All settings — see [Config](#config) |
+| `frontend/` | Vite + TypeScript + Three.js web UI — talks only to `bella/bridge.py`, never to a model directly |
 
 Sections below go deep on each piece; read them when you need to tune or
 debug something specific.
@@ -84,14 +84,14 @@ Code confirmation prompt (there's no terminal to confirm in) — use the
 interactive loop for anything where you want that safety check to apply.
 
 ```bash
-python3 -m max.cli --once "what's on my calendar today"
+python3 -m bella.cli --once "what's on my calendar today"
 ```
 
 ## Config
 
-`max/config.json` (created on first run, editable):
+`bella/config.json` (created on first run, editable):
 
-- `user_name` — how Max addresses you
+- `user_name` — how Bella addresses you
 - `default_backend` — `"ollama"` (keep this — never set to a paid backend as default)
 - `ollama_model` / `ollama_host` — local model to use
 - `models` — the catalog the dashboard offers: `{id, provider, model, label}` each, provider one of `ollama` / `groq` / `gemini`. Add a model here and it appears in the picker
@@ -104,7 +104,7 @@ python3 -m max.cli --once "what's on my calendar today"
 - `tts_backend` — `"piper"` (the only backend implemented)
 - `tts_voice_model` — path to the Piper `.onnx` voice model, relative to the project root
 - `wake_mode` — `"phrase"` (default; spot any phrase with VAD + Whisper) or `"model"` (an openWakeWord detector). See [Wake phrase](#wake-phrase)
-- `wake_phrases` — what to say to wake it (default `["hey max"]`); the last word is treated as the name and matched allowing for how speech-to-text mangles it
+- `wake_phrases` — what to say to wake it (default `["hey bella"]`); the last word is treated as the name and matched allowing for how speech-to-text mangles it
 - `wake_stt_model` — empty (default) shares the command model; set a size to load a separate, faster one for spotting
 - `wake_hotkey_mode` — `"double_tap"` (default), `"combo"` or `"off"`: tap a shortcut to start a turn from any app
 - `wake_hotkey_key` — which modifier to double-tap (default `"cmd_r"`, Right Command)
@@ -120,9 +120,9 @@ python3 -m max.cli --once "what's on my calendar today"
 - `vision_ollama_model` — local Ollama vision model, used only for screens with almost no text (default `"moondream"`, `ollama pull moondream` first)
 - `screen_ocr_enabled` — read the screen with macOS on-device OCR (default `true`; the primary path — see [Screen understanding](#screen-understanding-read-only-never-confirmed))
 - `screen_text_model` — pins a specific *local* model for screen questions; empty (the default) means the `screen` role from the dashboard decides
-- `screen_hud_window_marker` — window title treated as Max's own and left out of the capture (default `"Max HUD"`, matching the web UI's `<title>`; it is deliberately two words, since a bare "Max" is a substring of ordinary window titles like "Monitoring")
+- `screen_hud_window_marker` — window title treated as Bella's own and left out of the capture (default `"Bella HUD"`, matching the web UI's `<title>`; it is deliberately two words, since a bare "Bella" is a substring of ordinary window titles like "Monitoring")
 - `screen_hide_ui` / `screen_hide_delay_ms` — blank the web UI before a fallback screenshot, and how long to wait first (only used when native capture is unavailable)
-- `screen_cloud_fallback` / `screen_cloud_model` — paid cloud vision fallback, off by default; needs `GEMINI_API_KEY` in `max/.env` and still asks before sending anything
+- `screen_cloud_fallback` / `screen_cloud_model` — paid cloud vision fallback, off by default; needs `GEMINI_API_KEY` in `bella/.env` and still asks before sending anything
 - `screen_feed_enabled` — the web UI's live Screen Feed card, which screenshots this Mac every 2s while a tab is open; set `false` to disable it regardless of the UI's own toggle (default `true`)
 - `browser_enabled` — set `false` to fully disable browser control (default `true`)
 - `location_enabled` — set `false` to fully disable weather/nearby-places/Maps (default `true`)
@@ -142,7 +142,7 @@ answers read as vague or invented. So the model is now a choice, made per
 | `voice` | Spoken replies | the fastest one — latency dominates |
 | `screen` | Questions about what's on screen | fast, but a bigger model reads better |
 
-Three providers, one interface (`max/llm.py`):
+Three providers, one interface (`bella/llm.py`):
 
 - **Local (Ollama)** — free, private, always available, and always the
   fallback.
@@ -157,12 +157,12 @@ the same way — so adding these added no dependencies at all.
 
 ### Adding a key
 
-Keys live in `max/.env`, which is gitignored. `max/.env.example`
+Keys live in `bella/.env`, which is gitignored. `bella/.env.example`
 lists the names:
 
 ```bash
-cp max/.env.example max/.env    # if you don't have one yet
-# then edit max/.env and paste the key after the "="
+cp bella/.env.example bella/.env    # if you don't have one yet
+# then edit bella/.env and paste the key after the "="
 GROQ_API_KEY=...
 GEMINI_API_KEY=...
 ```
@@ -178,20 +178,20 @@ before it runs. A cloud model is used only for a role you have explicitly
 assigned it to, which is a clearer consent model than a per-turn prompt:
 the assignment is visible in Front when you inspect it, and persists in
 `config.json`. The HUD does not show vendor names on the glass (replies
-read `[Max]`) so a glance over your shoulder does not reveal the model.
+read `[Bella]`) so a glance over your shoulder does not reveal the model.
 
 Two more things worth knowing:
 
 - **The process log still records who actually answered** — Groq, Gemini,
-  or local. If a cloud call fails, Max falls back to the local model,
-  says so in the log, and the HUD still labels the reply `[Max]`.
+  or local. If a cloud call fails, Bella falls back to the local model,
+  says so in the log, and the HUD still labels the reply `[Bella]`.
 - **A cloud failure never ends a turn.** Unreachable API, bad key, rate
   limit — it falls back to local and answers anyway.
 
 ## Personality
 
-`max/persona.py` builds the system prompt: calm, competent, slightly
-formal British-butler tone with dry wit — classic Max. Addresses you by
+`bella/persona.py` builds the system prompt: calm, competent, slightly
+formal British-butler tone with dry wit — classic Bella. Addresses you by
 `user_name` from config (not every line — just occasionally). Concise by
 default, more detail on request. This prompt is only used on the Ollama
 path (`handle_ollama` in `cli.py`) — Calendar/Notes/Files tool replies are
@@ -207,7 +207,7 @@ local `/api/chat` endpoint.
 
 - `/ollama <message>` — force local model for this turn
 - `/claude <task>` — force Claude Code handoff for this turn
-- Otherwise, `max/router.py` decides via keyword rules (zero token cost,
+- Otherwise, `bella/router.py` decides via keyword rules (zero token cost,
   no model call). Coding/build/refactor/debug/deploy-shaped requests escalate;
   everything else stays local.
 
@@ -216,12 +216,12 @@ local `/api/chat` endpoint.
 **The model is the reasoning engine, not the memory.** Everything personal
 lives locally as plain text and is assembled *before* a model is chosen,
 so switching from local to Groq or Gemini changes who is thinking, never
-who Max thinks you are.
+who Bella thinks you are.
 
 | File | Owner | What it holds |
 |---|---|---|
 | `memory/facts.md` | **you** | Hand-written facts, and whatever `/remember` adds. Nothing automatic ever edits it |
-| `memory/profile.md` | **Max** | Distilled from conversations: identity, speaking style, preferences, recurring topics |
+| `memory/profile.md` | **Bella** | Distilled from conversations: identity, speaking style, preferences, recurring topics |
 | `memory/conversation_log.jsonl` | — | Raw turns, append-only |
 | `memory/conversation_archive.jsonl` | — | Turns past the retention window. Archived, never deleted |
 | `memory/memory_state.json` | — | When reflection last ran, so restarts don't re-distil the same history |
@@ -239,7 +239,7 @@ contain the learned profile.
 
 ### Self-improving
 
-After a turn is answered, `max/reflection.py` runs on a background
+After a turn is answered, `bella/reflection.py` runs on a background
 thread — never in the turn, so it can't cost you latency. Once ~20 new
 turns have accumulated (or 20 minutes have passed with a few waiting), it
 reads them and folds what it finds into `profile.md`. You never have to
@@ -268,9 +268,9 @@ role; it stays local and free unless you assign it something else.
 ### Inspecting and driving it
 
 ```bash
-max/.venv/bin/python3 -m max.reflection            # status + current profile
-max/.venv/bin/python3 -m max.reflection --now      # distil right now
-max/.venv/bin/python3 -m max.reflection --prune    # archive old turns
+bella/.venv/bin/python3 -m bella.reflection            # status + current profile
+bella/.venv/bin/python3 -m bella.reflection --now      # distil right now
+bella/.venv/bin/python3 -m bella.reflection --prune    # archive old turns
 ```
 
 `profile.md` is a plain file: edit a line you disagree with, or delete the
@@ -279,24 +279,24 @@ either way.
 
 ### Verifying it survives a model switch
 
-1. `python3 -m max.reflection` and note a line from the profile.
+1. `python3 -m bella.reflection` and note a line from the profile.
 2. In the web UI, set **chat** to a local model. Ask "what do you know about me?"
 3. Switch **chat** to Groq or Gemini. Ask again.
 
 The recalled details should be the same; only the phrasing changes. The
-HUD still labels the reply `[Max]`; the process log names the backend.
+HUD still labels the reply `[Bella]`; the process log names the backend.
 
 ### Memory config
 
 - `memory_retention_days` (21) — raw turns stay loadable this long, then archive
-- `memory_reflection_enabled` (true) — false means Max only knows what you told it explicitly
+- `memory_reflection_enabled` (true) — false means Bella only knows what you told it explicitly
 - `memory_reflect_every_turns` (20) / `memory_reflect_min_seconds` (1200) — how often it distils
 - `memory_reflect_max_turns` (60) / `memory_reflect_max_tokens` (500) — how much it looks at per pass
 
 ## Calendar & Notes (AppleScript, no Ollama/Claude call needed)
 
-`max/router.py` also recognizes Calendar/Notes-shaped requests and routes
-them straight to `max/tools/calendar.py` / `max/tools/notes.py` — pure
+`bella/router.py` also recognizes Calendar/Notes-shaped requests and routes
+them straight to `bella/tools/calendar.py` / `bella/tools/notes.py` — pure
 AppleScript via `osascript`, zero model calls, zero token cost. This is
 checked *before* the Ollama/Claude Code decision, since it's the cheapest
 possible path.
@@ -310,7 +310,7 @@ Writes (asks to confirm first, unless `tools_confirm_writes` is `false`):
 - "take a note: buy milk and eggs"
 
 Limitations:
-- Date/time parsing (`max/tools/parsing.py`) is regex-based, not a full
+- Date/time parsing (`bella/tools/parsing.py`) is regex-based, not a full
   NLP date parser. It handles "tomorrow", weekday names, "at 3pm", "for 30
   minutes". An hour with no am/pm is guessed (1–7 → PM, else AM). Unusual
   phrasing may need a retry with more explicit wording.
@@ -329,22 +329,22 @@ below). No Claude Code involved in either path.
 ### Files (Ollama tool-calling)
 
 File paths and content are too free-form for regex extraction, so
-`max/cli.py` gives Ollama the tool schemas from `max/tools/registry.py`
+`bella/cli.py` gives Ollama the tool schemas from `bella/tools/registry.py`
 and lets *it* decide which tool to call and with what arguments (`read_file`,
-`write_file`, `list_dir`, defined in `max/tools/files.py`). Still 100%
+`write_file`, `list_dir`, defined in `bella/tools/files.py`). Still 100%
 local/free — it's Ollama, just with tools attached.
 
-- "read the file README.md", "list the files in max/tools" — read-only, no confirmation
+- "read the file README.md", "list the files in bella/tools" — read-only, no confirmation
 - "write ... to a file called notes.txt" — asks to confirm first (`tools_confirm_writes`)
 
 Safety/accuracy notes:
 - `read_file`/`write_file`/`list_dir` are hard-scoped to the project
-  directory — `max/tools/files.py` resolves and rejects any path that
+  directory — `bella/tools/files.py` resolves and rejects any path that
   escapes it (path traversal via `../` is blocked, verified).
 - Ollama's model template doesn't populate the native `tool_calls` field for
   `qwen2.5-coder` — it emits the call as a JSON object in plain `content`
   instead (verified empirically), sometimes wrapped in a markdown code
-  fence, sometimes with conversational text before it. `max/tools/registry.py`
+  fence, sometimes with conversational text before it. `bella/tools/registry.py`
   scans for a JSON object anywhere in the reply (not just at the start) to
   handle this, and also reads the native `tool_calls` field if a future
   model populates it correctly.
@@ -361,12 +361,12 @@ Safety/accuracy notes:
   actual file for anything that matters.
 ### Shell (deterministic — never asks Ollama whether to run something)
 
-Shell commands are **not** LLM-mediated. `max/router.py` detects an
+Shell commands are **not** LLM-mediated. `bella/router.py` detects an
 explicit "run"/"execute" request (`SHELL_PATTERNS`, checked before the
-`files` patterns so it always wins), `max/tools/parsing.py`'s
+`files` patterns so it always wins), `bella/tools/parsing.py`'s
 `extract_shell_command()` regex-extracts the literal command from the
-phrasing, and `max/cli.py`'s `handle_shell()` confirms and runs it
-directly via `max/tools/shell.py` — no model ever decides *whether* to
+phrasing, and `bella/cli.py`'s `handle_shell()` confirms and runs it
+directly via `bella/tools/shell.py` — no model ever decides *whether* to
 run it, and the model never sees (or can misrepresent) the output, since
 there's no phrasing pass afterward; you get the raw command output back.
 
@@ -396,10 +396,10 @@ be fully disabled via config (`vision_enabled` / `browser_enabled`).
 
 **One-time setup** (not needed for anything else in this project):
 ```bash
-max/.venv/bin/pip install pyobjc-framework-Vision   # on-device OCR, ~1MB
+bella/.venv/bin/pip install pyobjc-framework-Vision   # on-device OCR, ~1MB
 ollama pull moondream                          # local vision model, ~1.6GB (text-free screens only)
-max/.venv/bin/pip install playwright
-max/.venv/bin/playwright install chromium   # ~150-300MB
+bella/.venv/bin/pip install playwright
+bella/.venv/bin/playwright install chromium   # ~150-300MB
 ```
 `pyobjc-framework-Quartz` is already a dependency (Maps/CoreLocation use
 it), and Vision comes from the same family — together they give native
@@ -409,7 +409,7 @@ works, via `screencapture` and the vision model, just less well.
 Screenshots require macOS's "Screen Recording" permission — grant it once
 to whatever app hosts this process (Terminal, etc.) in
 System Settings > Privacy & Security > Screen Recording, then restart the
-voice loop/bridge. Max detects a missing grant *before* capturing (other
+voice loop/bridge. Bella detects a missing grant *before* capturing (other
 apps' window titles are privileged the same way pixels are) and says
 exactly what to do, rather than silently describing a blank desktop.
 
@@ -421,13 +421,13 @@ exactly what to do, rather than silently describing a blank desktop.
 LLM-mediated. Same tier as calendar/notes/email reads: automatic, local,
 free, no confirmation.
 
-**The capture is native, and Max is not in it.** The HUD is a web page,
+**The capture is native, and Bella is not in it.** The HUD is a web page,
 so nothing it can capture is more than its own tab — capture therefore
 happens in Python, through macOS's window server
-(`max/screen_capture.py`). More importantly, with the HUD open the
+(`bella/screen_capture.py`). More importantly, with the HUD open the
 honest answer to "what's on my screen" was "a glowing blue orb". Rather
 than minimising the window and hoping, the screen is composited from the
-window list **with the Max window left out**
+window list **with the Bella window left out**
 (`CGWindowListCreateImageFromArray`): everything else is captured exactly
 as it is, including other windows of the same browser, with no hiding, no
 delay and no flicker. Runs in ~0.1s.
@@ -450,13 +450,13 @@ desktop's worth of OCR and asked to summarize, the small local models
 invented every time — a URL that wasn't on screen, an integration that
 doesn't exist. The window server already knows exactly which app is in
 front and what else is open, and the OCR already knows which line is drawn
-largest, so Max states those instead: *"You're in Visual Studio Code, on
-'MaxOS'. Safari, Terminal and Notes are also open. The largest text on
+largest, so Bella states those instead: *"You're in Visual Studio Code, on
+'Bella'. Safari, Terminal and Notes are also open. The largest text on
 screen reads ..."*. Always true, and faster than a model call.
 
 **Permissions.** This needs **Screen Recording**, granted to whatever app
-starts Max (your Terminal, if you use `./start_max.sh`) in System
-Settings > Privacy & Security > Screen Recording. Without it Max says
+starts Bella (your Terminal, if you use `./start_bella.sh`) in System
+Settings > Privacy & Security > Screen Recording. Without it Bella says
 so in plain language instead of describing a blank desktop — window titles
 are privileged the same way pixels are, so a missing grant is detected
 before anything is captured (`screen_capture.has_permission()`).
@@ -466,7 +466,7 @@ at the screen. Finer control: `screen_ocr_enabled` (OCR path),
 `screen_feed_enabled` (the live card in the UI), `screen_cloud_fallback`
 (paid cloud vision, off by default and confirmed even when on).
 
-**Hide/restore.** If the native path is unavailable (no pyobjc), Max
+**Hide/restore.** If the native path is unavailable (no pyobjc), Bella
 falls back to `screencapture`, which photographs everything including the
 HUD. In that case only, it publishes a `screen_capture` phase event; the
 bridge relays it and the web UI blanks itself for the shot, then comes
@@ -491,8 +491,8 @@ the primary path.
 "navigate to ...", "type my email into the field" → `[Browser]`.
 LLM-mediated (same pattern as the file tools above) — click targets,
 typed text, and URLs are too free-form for regex extraction. Ollama picks
-one of five tools from `max/tools/browser.py`, run against **one
-persistent, Max-controlled Chromium instance** (`max/browser_profile/`,
+one of five tools from `bella/tools/browser.py`, run against **one
+persistent, Bella-controlled Chromium instance** (`bella/browser_profile/`,
 gitignored — never your actual daily browser), launched lazily on first
 use so logins/cookies persist across turns instead of a fresh incognito
 window spawning every command.
@@ -538,15 +538,15 @@ Safety/accuracy notes:
 Two more tool domains, same "cheapest-capable-first, confirm before
 anything changes state" architecture as everything else in this project.
 Both fully disableable via config (`location_enabled` / `calling_enabled`).
-**No new dependencies** — `max/location_client.py` is stdlib `urllib`
+**No new dependencies** — `bella/location_client.py` is stdlib `urllib`
 only, same pattern as `spotify_client.py`/`sarvam_client.py`, and calling
 is a single `open tel:...` subprocess call.
 
 Unlike the browser tools above, **none of this is LLM-mediated** — place
 category (restaurant/hotel/gas station/cafe/pharmacy) is a plain keyword
 lookup over a small fixed vocabulary
-(`max/tools/location.py:detect_category`), and a phone number is
-regex-extracted (`max/tools/calling.py:parse_phone_number`), the same
+(`bella/tools/location.py:detect_category`), and a phone number is
+regex-extracted (`bella/tools/calling.py:parse_phone_number`), the same
 non-LLM-mediated treatment `router.py` already gives shell commands and
 for the same reason: a real-world action (ringing a phone, opening a
 real app) can't depend on a model reliably choosing to call a tool.
@@ -574,7 +574,7 @@ never from the model.
 
   Then enable it under **System Settings → Privacy & Security → Location
   Services** (both the global toggle and the CoreLocationCLI entry).
-  Until that is granted the binary just errors and Max stays on IP.
+  Until that is granted the binary just errors and Bella stays on IP.
   When it does fall back, spoken answers say "near \<city\>, going by your
   network location" rather than stating the place as fact.
 - **Weather**: [Open-Meteo](https://open-meteo.com/) — free, no API key.
@@ -582,14 +582,14 @@ never from the model.
   MapKit — free, no API key, no account.
 
   ```sh
-  max/.venv/bin/pip install pyobjc-framework-MapKit
+  bella/.venv/bin/pip install pyobjc-framework-MapKit
   ```
 
   Used instead of OpenStreetMap because OSM rarely carries phone numbers:
   measured 1 of 32 places within 5km, versus a number for every nearby
   restaurant MapKit returned. Note `MKLocalSearch` treats its region as a
   ranking hint, not a filter — searching a name with no local match
-  happily returns one hundreds of km away — so `max/maps_client.py`
+  happily returns one hundreds of km away — so `bella/maps_client.py`
   discards anything beyond 25km and every confirmation shows the distance.
 - **Nearby places**: OpenStreetMap's Overpass API — free, no API key.
   Tries three known public mirrors in sequence (the main instance
@@ -619,7 +619,7 @@ On the iPhone: **Settings → Phone → Calls on Other Devices** → allow this
 Mac. Same Apple ID, Wi-Fi and Bluetooth on. Then FaceTime on the Mac can
 place the call and it rings on the iPhone.
 
-`user_phone` in config is your own number. Max will not dial it as if it
+`user_phone` in config is your own number. Bella will not dial it as if it
 were a restaurant.
 
 **This phase deliberately does not**: dial automatically without
@@ -629,19 +629,19 @@ confirmation, invent a number, or use any paid telephony API.
 
 Every reply is spoken aloud via [Piper](https://github.com/rhasspy/piper), a
 local neural TTS engine — no cloud calls, no cost. It's installed in an
-isolated project-local virtualenv (`max/.venv`) so it never touches system
+isolated project-local virtualenv (`bella/.venv`) so it never touches system
 Python; delete that directory to fully remove it.
 
 Setup (already done in this repo, for reference / reinstalling elsewhere):
 
 ```bash
-python3 -m venv max/.venv
-max/.venv/bin/pip install piper-tts
-# voice model (British male, fits the Max persona):
-mkdir -p max/voices
-curl -sL -o max/voices/en_GB-alan-medium.onnx \
+python3 -m venv bella/.venv
+bella/.venv/bin/pip install piper-tts
+# voice model (British male, fits the Bella persona):
+mkdir -p bella/voices
+curl -sL -o bella/voices/en_GB-alan-medium.onnx \
   "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx"
-curl -sL -o max/voices/en_GB-alan-medium.onnx.json \
+curl -sL -o bella/voices/en_GB-alan-medium.onnx.json \
   "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alan/medium/en_GB-alan-medium.onnx.json"
 ```
 
@@ -657,30 +657,30 @@ and point `tts_voice_model` at it.
 ## Always-on voice loop
 
 ```bash
-max/.venv/bin/python3 -m max.voice_loop
+bella/.venv/bin/python3 -m bella.voice_loop
 ```
 
 Continuous mic capture — no terminal typing, no per-turn dictation. Say
-"Hey Max", then your request; it transcribes, routes, and speaks the
+"Hey Bella", then your request; it transcribes, routes, and speaks the
 reply, then goes back to listening.
 
 ### Wake phrase
 
-**Say "Hey Max."** The phrase is whatever you put in config, and nothing
+**Say "Hey Bella."** The phrase is whatever you put in config, and nothing
 in it is named after another product:
 
 ```json
 "wake_mode": "phrase",
-"wake_phrases": ["hey max"],
+"wake_phrases": ["hey bella"],
 ```
 
 This is not a pretrained wake-word model, because there is no pretrained
-"hey max" to use. openWakeWord ships exactly four — `hey_jarvis`,
+"hey bella" to use. openWakeWord ships exactly four — `hey_jarvis`,
 `alexa`, `hey_mycroft`, `hey_rhasspy` — so a product built on the
 pretrained set is permanently woken by somebody else's brand, which is
 fine for a hobby and not fine for anything you intend to ship.
 
-Instead (`max/wake_phrase.py`): Silero VAD marks each stretch of
+Instead (`bella/wake_phrase.py`): Silero VAD marks each stretch of
 speech, the loop's own Whisper transcribes that stretch, and the phrase is
 matched in the text. Nothing to train, nothing downloaded that carries a
 name, and the phrase is a config line rather than a model file.
@@ -688,7 +688,7 @@ name, and the phrase is a config line rather than a model file.
 **Why the matching is fuzzy.** Whisper is not a keyword spotter — it
 writes what it hears through an English lexicon, so an invented name comes
 back as the nearest real word, and a *different* one each time. Measured
-across models on one synthesized "Hey Max": `Oren`, `Orrin`, `Arin`,
+across models on one synthesized "Hey Bella": `Oren`, `Orrin`, `Arin`,
 `Arryn`, `Orange`, `Auring`, `or in`. So the name is matched by
 similarity, with the wilder renderings listed explicitly, and two rules
 keep that from firing on ordinary speech:
@@ -696,7 +696,7 @@ keep that from firing on ordinary speech:
 - the loose spellings are only accepted straight after a lead word ("hey",
   "ok", "hi"), so *"the orange juice is in the fridge"* stays quiet while
   *"hey Orange"* wakes it;
-- a bare name at the start of an utterance ("Max, check my calendar") is
+- a bare name at the start of an utterance ("Bella, check my calendar") is
   accepted only for the close spellings.
 
 Verified end to end against synthesized speech — 13/13, including *"I was
@@ -712,13 +712,13 @@ sharing the bigger model is the better default.
 
 **One real trade-off.** A wake-word model fires *mid-phrase*; this fires
 when you stop speaking. In exchange the whole utterance is already
-captured, so "hey Max, what's the weather" needs no second recording —
+captured, so "hey Bella, what's the weather" needs no second recording —
 the same audio is reused, which is quicker overall than waking and then
-listening again. Saying just "Hey Max" still chimes and waits, as before.
+listening again. Saying just "Hey Bella" still chimes and waits, as before.
 
 ### Wake hotkey
 
-**Double-tap Right Command** to wake Max from any application. It chimes
+**Double-tap Right Command** to wake Bella from any application. It chimes
 and listens for one utterance — exactly what saying the wake phrase does,
 without saying anything.
 
@@ -738,14 +738,14 @@ push-to-talk's Control+Option — so the two can never trip over each other.
 Chord mode works too, and accepts letters, digits and F-keys. One caveat
 decided the default: the listener *observes* keystrokes without consuming
 them, so a chord also reaches whatever app has focus —
-Control+Option+Space would wake Max and type a space into your editor. A
+Control+Option+Space would wake Bella and type a space into your editor. A
 double-tapped modifier types nothing.
 
 Both shortcuts need the same **Input Monitoring** grant, and
 `./check_hotkey.sh` tests both, saying which one didn't register.
 
 So there are three ways to start a turn, suiting different moments: say
-"Hey Max" from across the room, tap the shortcut while your hands are on
+"Hey Bella" from across the room, tap the shortcut while your hands are on
 the keyboard, hold Control+Option when there's music playing.
 
 ### Microphone off (privacy)
@@ -758,11 +758,11 @@ buffered or transcribed until you switch it back on.
 That distinction is the whole point. A mute flag that keeps the stream
 open and drops frames looks identical from the outside, and gives you no
 way to check the claim. With the device closed, the operating system is
-the one telling you Max is not listening — you do not have to trust this
+the one telling you Bella is not listening — you do not have to trust this
 code. You can also check from anywhere:
 
 ```bash
-cat /tmp/max_control.json      # {"mic_muted": true, ...}
+cat /tmp/bella_control.json      # {"mic_muted": true, ...}
 ```
 
 While muted: no wake phrase, no push-to-talk, no recording, no
@@ -774,30 +774,30 @@ Right Command), which un-mutes and starts a turn in one gesture — the
 keyboard is not the microphone, so a deliberate keypress is a safe way
 back without ever having listened.
 
-This is separate from **SOUND ON / MUTED**, which is about Max's *voice*
+This is separate from **SOUND ON / MUTED**, which is about Bella's *voice*
 — whether replies are spoken aloud. One is what it says, the other is
 what it hears.
 
-State lives in `/tmp/max_control.json`, written atomically by the bridge
+State lives in `/tmp/bella_control.json`, written atomically by the bridge
 and polled by the voice loop, because the two are separate OS processes
 and a privacy switch needs somewhere to live that either side can read
 and neither can lose.
 
 ### Stopping it
 
-**"Stop Max"** (or "Max, stop" / "Max, be quiet") cuts a reply off
+**"Stop Bella"** (or "Bella, stop" / "Bella, be quiet") cuts a reply off
 mid-sentence, cancels whatever tool is running, and stands by quietly —
 it does not then sit there waiting for a command, which is the difference
 between stopping and stopping-then-staring-at-you.
 
 The name is required, deliberately. This is matched against audio picked
-up *while Max is talking*, and this machine has no echo cancellation, so
-a bare "stop" would let Max interrupt itself the moment it said a
+up *while Bella is talking*, and this machine has no echo cancellation, so
+a bare "stop" would let Bella interrupt itself the moment it said a
 sentence containing the word — verified: "I'll stop the music for you
-now", spoken by Max into its own mic, correctly does nothing. Max never
+now", spoken by Bella into its own mic, correctly does nothing. Bella never
 says its own name followed by "stop".
 
-Said when Max is *not* talking, "stop" on its own still works and closes
+Said when Bella is *not* talking, "stop" on its own still works and closes
 the conversation window. One exception, which was a real bug: "stop the
 music" (and the song/track/playback/timer variants) is a command about
 that thing, so it now reaches the Spotify pause path instead of being
@@ -810,20 +810,20 @@ swallowed as "be quiet".
 "voice_wake_word": "hey_jarvis"
 ```
 
-and if you ever want a *trained* "hey max", openWakeWord's custom
+and if you ever want a *trained* "hey bella", openWakeWord's custom
 training produces a model file that drops straight into that same setting.
 
 - **Wake phrase**: VAD-segmented speech transcribed by the same local
-  Whisper and matched against `wake_phrases` (`max/wake_phrase.py`) — see
+  Whisper and matched against `wake_phrases` (`bella/wake_phrase.py`) — see
   [Wake phrase](#wake-phrase) above. `wake_mode: "model"` switches to
   [openWakeWord](https://github.com/dscripka/openWakeWord) instead.
 - **Transcription**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
   (`small.en` by default), run on each stretch of speech rather than
   continuously
-- **Utterance boundary**: simple RMS-energy silence detection (`max/voice_loop.py`)
+- **Utterance boundary**: simple RMS-energy silence detection (`bella/voice_loop.py`)
   — not full WebRTC VAD, kept minimal on purpose. The threshold is
   **auto-calibrated at startup** (`VoiceLoop.calibrate()`): it samples ~2.5s
-  of real ambient noise, takes the *median* (not max — a single spike like a
+  of real ambient noise, takes the *median* (not bella — a single spike like a
   click or cough isn't representative and will throw off a max-based
   estimate, confirmed by hitting this exact bug live), and sets the working
   threshold to `median × 2.2`, floored at `voice_silence_rms_threshold` in
@@ -835,8 +835,8 @@ training produces a model file that drops straight into that same setting.
 
 Confirmations (Claude Code handoff, calendar/note writes, shell commands)
 work the same way here as in the text loop, just spoken instead of typed:
-Max speaks the question aloud, then listens for a short yes/no reply.
-`max/cli.py`'s `process_turn`/`handle_tool`/etc. all take a swappable
+Bella speaks the question aloud, then listens for a short yes/no reply.
+`bella/cli.py`'s `process_turn`/`handle_tool`/etc. all take a swappable
 `confirm_fn` for exactly this — `text_confirm` (types) for the terminal
 loop, `VoiceLoop.voice_confirm` (speaks + listens) here. Same core pipeline,
 two front ends.
@@ -844,13 +844,13 @@ two front ends.
 Setup (already done in this repo, for reference / reinstalling elsewhere):
 
 ```bash
-max/.venv/bin/pip install sounddevice numpy openwakeword faster-whisper
+bella/.venv/bin/pip install sounddevice numpy openwakeword faster-whisper
 # faster-whisper downloads its model automatically on first run.
 # openwakeword is only needed for wake_mode: "model"; the default phrase
 # mode uses the Whisper above and the vendored Silero VAD, nothing else.
 ```
 
-Tested twice: first end-to-end with synthesized "Hey Max, ..." phrases
+Tested twice: first end-to-end with synthesized "Hey Bella, ..." phrases
 (Piper) played through the speakers into the real mic, then live with
 Javed's actual voice. The live run surfaced a real calibration bug the
 synthetic test couldn't have caught (see below) — fixed and re-verified live
@@ -860,23 +860,23 @@ request went through the full voice-confirm (spoke the question, correctly
 parsed a spoken "yes") end to end.
 
 Limitations:
-- Requires `max/.venv`'s Python specifically (`sounddevice`/`openwakeword`/
+- Requires `bella/.venv`'s Python specifically (`sounddevice`/`openwakeword`/
   `faster-whisper` aren't in system Python) — always launch with
-  `max/.venv/bin/python3 -m max.voice_loop`, not plain `python3`.
+  `bella/.venv/bin/python3 -m bella.voice_loop`, not plain `python3`.
 - The wake phrase is matched from a transcript, so it fires when you stop
-  speaking rather than mid-phrase. "Hey Max" is the reliable form:
-  addressing it by bare name ("Max, check my calendar") works when the
+  speaking rather than mid-phrase. "Hey Bella" is the reliable form:
+  addressing it by bare name ("Bella, check my calendar") works when the
   speech-to-text hears the name, but it sometimes swallows a leading
   proper noun entirely, in which case nothing wakes.
 - Whatever the matcher accepts as the name is stripped from the command
   before it reaches the model — including spellings nobody has seen yet.
-  That fixed a live failure where "Max, I am really depressed" arrived as
-  "Kiren, ..." and Max spent the rest of the conversation calling its
+  That fixed a live failure where "Bella, I am really depressed" arrived as
+  "Kiren, ..." and Bella spent the rest of the conversation calling its
   user Kiren. New mishearings can also be added to `NAME_MISHEARINGS`
-  (`max/wake_phrase.py`) so the follow-up handling knows them too.
+  (`bella/wake_phrase.py`) so the follow-up handling knows them too.
 - Barge-in is phrase-gated: say the wake phrase (or press push-to-talk)
   to interrupt a reply. It is deliberately not volume-gated — this machine
-  has no echo cancellation, so a loudness threshold cuts Max off on the
+  has no echo cancellation, so a loudness threshold cuts Bella off on the
   sound of its own voice.
 - RMS silence detection is a simple energy threshold, not true voice
   activity detection — a loud enough room can extend recording past when
@@ -892,11 +892,11 @@ Limitations:
 
 An audio-reactive orb + transcript panel — a visual front end, nothing
 more. It does not route, does not decide anything, does not talk to any
-model directly. It talks to `max/bridge.py` over a WebSocket, and
-`max/bridge.py` calls the *exact same* `process_turn()` / `label()` /
+model directly. It talks to `bella/bridge.py` over a WebSocket, and
+`bella/bridge.py` calls the *exact same* `process_turn()` / `label()` /
 `load_config()` / `MemoryStore` that `cli.py` and `voice_loop.py` already
-use. If `bridge.py` were deleted, `python3 -m max.cli` and
-`python3 -m max.voice_loop` would be completely unaffected — this is a
+use. If `bridge.py` were deleted, `python3 -m bella.cli` and
+`python3 -m bella.voice_loop` would be completely unaffected — this is a
 third front end bolted onto the existing brain, not a rewrite of any part
 of it.
 
@@ -906,15 +906,15 @@ Everyday path — Caddy serves the built HUD locally:
 
 ```bash
 ./deploy/install_local.sh          # once: Caddy + bridge at login
-open http://max.localhost:2015
-./start_max.sh                     # from Terminal, for mic/hotkey permission
+open http://bella.localhost:2015
+./start_bella.sh                     # from Terminal, for mic/hotkey permission
 ```
 
 Vite dev session if you are changing the HUD:
 
 ```bash
 # Terminal 1 — the bridge
-max/.venv/bin/python3 -m max.bridge      # ws://localhost:8765
+bella/.venv/bin/python3 -m bella.bridge      # ws://localhost:8765
 
 # Terminal 2 — the UI
 cd frontend
@@ -928,14 +928,14 @@ doesn't fall back to doing anything itself.
 
 ### How it connects (and what it deliberately can't do)
 
-`max/bridge.py` is presentation-layer glue, not a second implementation
+`bella/bridge.py` is presentation-layer glue, not a second implementation
 of anything:
 
 - **Sending a message**: UI sends `{"type": "message", "text": "..."}` →
   bridge calls `cli.process_turn(text, cfg, mem, interactive=True, confirm_fn=...)`
   in a worker thread (it's synchronous — blocking network/subprocess calls,
   same as the CLI) → sends back `{"type": "reply", "label": cli.label(backend), "text": response}`.
-  The label shown is *always* `cli.label()`'s actual output — Max,
+  The label shown is *always* `cli.label()`'s actual output — Bella,
   Calendar, Notes, Files, Shell, Claude Code — never reimplemented or
   guessed at in the frontend.
 - **Confirmations are not bypassed**: when `process_turn` needs to confirm
@@ -953,7 +953,7 @@ of anything:
   reusing `process_turn`'s *existing* prefix handling verbatim. Zero new
   server-side logic. `/claude` still goes through the exact same
   `claude_code_confirm` gate as typing it in the terminal would.
-- **TTS plays in the browser, not on the server**: `max/tts.py` was
+- **TTS plays in the browser, not on the server**: `bella/tts.py` was
   split into `synthesize()` (Piper → WAV bytes, no playback) and `play()`
   (afplay, unchanged) — `speak()` still calls both in sequence, so
   `cli.py` and `voice_loop.py` behave identically to before. The bridge
@@ -968,7 +968,7 @@ of anything:
 
 ### Visual design
 
-Electric-blue holographic HUD modelled on the classic Max interface
+Electric-blue holographic HUD modelled on the classic Bella interface
 look: a compact glowing core inside a layered SVG reticle (tick ring,
 segmented arcs, dashed ring, node dots, corner brackets — each rotating at
 a different rate), a large command rail down the left, comms log right,
@@ -980,7 +980,7 @@ size and a fixed position — a primary voice-loop toggle with its own state
 LED, then Wake / Mute / Stop / Screen, then the two routing overrides. The
 bottom bar keeps only the text input and Send.
 
-**The core shows what state Max is in.** `ui.setStatus()` stamps the
+**The core shows what state Bella is in.** `ui.setStatus()` stamps the
 state on `<html>`, and the whole HUD answers to it at once: the core
 caption (LISTENING / PROCESSING / SPEAKING / LINK LOST), the orb colour,
 the level arc, the corner brackets, and the reticle's rotation speed. The
@@ -1016,7 +1016,7 @@ is gone: the card now shows a real screenshot of this Mac.
 **The orb moves with spoken replies too.** Voice-loop audio is played by
 `afplay` on the Mac's speakers and never reaches the browser, so the
 `AnalyserNode` has nothing to read and the orb used to sit still through
-every spoken turn — the main way this thing is used. `max/voice_events.py`
+every spoken turn — the main way this thing is used. `bella/voice_events.py`
 measures the RMS envelope of the exact WAV about to be played and
 publishes it as JSONL; the bridge tails that file and forwards it, and
 `envelope-player.ts` replays it against the browser's clock. The motion is
@@ -1051,6 +1051,6 @@ the voice loop — the same interrupt path push-to-talk uses.
 - **Text input only** — the UI sends typed text, not audio, to the bridge.
   Voice input still means either dictating into the CLI's terminal (Wispr)
   or running the separate always-on voice loop; the two aren't merged yet.
-- User mic-level reactivity (visualizing *your* voice, not just Max's
+- User mic-level reactivity (visualizing *your* voice, not just Bella's
   replies) wasn't built this pass — worth adding later, but out of scope
   for a pure presentation layer with no voice-input wiring yet.

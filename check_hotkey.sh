@@ -6,11 +6,11 @@
 # process launched by something else does not inherit your Terminal's
 # permission even though the code is identical.
 cd "$(dirname "$0")" || exit 1
-max/.venv/bin/python3 - <<'PYEOF'
+bella/.venv/bin/python3 - <<'PYEOF'
 import time
 
-from max import hotkey
-from max.config import load_config
+from bella import hotkey
+from bella.config import load_config
 
 cfg = load_config()
 

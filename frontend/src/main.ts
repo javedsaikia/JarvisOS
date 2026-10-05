@@ -6,10 +6,10 @@ import { HudRing } from "./hud-ring";
 import { Visualizers } from "./visualizers";
 import { VoiceRing } from "./voice-ring";
 import { EnvelopePlayer } from "./envelope-player";
-import { MaxSocket, type ServerMessage } from "./socket";
+import { BellaSocket, type ServerMessage } from "./socket";
 import { SpotifyWidget } from "./spotify-widget";
 
-// Overridable with ?bridge=ws://host:port. Behind Caddy (max.local) the
+// Overridable with ?bridge=ws://host:port. Behind Caddy (bella.local) the
 // page and the socket share a host; Vite still talks to the bridge port.
 function defaultBridgeUrl(): string {
   const { protocol, hostname, host, port } = location;
@@ -92,7 +92,7 @@ const envelopePlayer = new EnvelopePlayer(
 
 let connected = false;
 let voiceRunning = false;
-const socket = new MaxSocket(BRIDGE_URL, (isConnected) => {
+const socket = new BellaSocket(BRIDGE_URL, (isConnected) => {
   connected = isConnected;
   ui.setConnectionState(isConnected);
   ui.setLink(BRIDGE_URL, isConnected);

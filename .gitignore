@@ -1,6 +1,10 @@
 .env
 *.env
-max/.venv/
+bella/.venv/
+scripts/laya_poc/.venv/
+scripts/laya_poc/latency_results.json
+scripts/laya_poc/accuracy_results.json
+scripts/laya_poc/schema_validation.json
 frontend/node_modules/
 frontend/dist/
 __pycache__/
@@ -9,20 +13,22 @@ __pycache__/
 # Personal memory. conversation_log was already ignored; the archive is
 # the same content just older, profile.md is a written profile of the
 # user, and memory_state is local bookkeeping. This repo is public.
-max/memory/conversation_log.jsonl
-max/memory/conversation_archive.jsonl
-max/memory/facts.md
-max/memory/assamese_style.md
+bella/memory/conversation_log.jsonl
+bella/memory/conversation_archive.jsonl
+bella/memory/facts.md
+bella/memory/assamese_style.md
 # Same reasoning as assamese_style.md above: the .example.md is the
 # template that ships, this is the user's own collected material.
-max/memory/assamese_jokes.md
-max/memory/profile.md
-max/memory/memory_state.json
-max/memory/session.md
+bella/memory/assamese_jokes.md
+bella/memory/profile.md
+bella/memory/memory_state.json
+bella/memory/session.md
+bella/memory/assamese_eval_dataset.jsonl
+bella/memory/assamese_eval_export.jsonl
 .claude/settings.local.json
 .claude/*.lock
-max/browser_profile/
-max/.composio_session.json
+bella/browser_profile/
+bella/.composio_session.json
 # Live prefs: phone number, Composio user id, local model picks.
-# The committed template is max/config.example.json.
-max/config.json
+# The committed template is bella/config.example.json.
+bella/config.json
