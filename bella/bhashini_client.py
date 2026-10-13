@@ -186,12 +186,12 @@ def _load_config(tasks: list[str], language: str = "as") -> dict:
     return result
 
 
-def _compute(body: dict, cfg: dict) -> dict:
+def _compute(body: dict, pipeline: dict) -> dict:
     return _post(
-        cfg["callback_url"],
+        pipeline["callback_url"],
         body,
         headers={
-            cfg["auth_header"]: cfg["auth_value"],
+            pipeline["auth_header"]: pipeline["auth_value"],
             "Accept": "*/*",
         },
     )
@@ -222,13 +222,13 @@ def speech_to_text(
     timeout: int = 45,
 ) -> str:
     """Transcribe mono WAV (16 kHz preferred) to Assamese text."""
-    cfg = _load_config(["asr"], language)
+    pipeline = _load_config(["asr"], language)
     body = {
         "pipelineTasks": [{
             "taskType": "asr",
             "config": {
                 "language": {"sourceLanguage": language},
-                "serviceId": cfg["service_ids"]["asr"],
+                "serviceId": pipeline["service_ids"]["asr"],
                 "audioFormat": "wav",
                 "samplingRate": sample_rate,
             },
@@ -240,7 +240,7 @@ def speech_to_text(
             }],
         },
     }
-    item = _first_output(_compute(body, cfg), "asr")
+    item = _first_output(_compute(body, pipeline), "asr")
     outputs = item.get("output") or []
     if not outputs or not (outputs[0].get("source") or "").strip():
         raise BhashiniError("Bhashini ASR returned no transcript")
@@ -259,13 +259,13 @@ def text_to_speech(
     cleaned = (text or "").strip()
     if not cleaned:
         raise BhashiniError("no text to speak")
-    cfg = _load_config(["tts"], language)
+    pipeline = _load_config(["tts"], language)
     body = {
         "pipelineTasks": [{
             "taskType": "tts",
             "config": {
                 "language": {"sourceLanguage": language},
-                "serviceId": cfg["service_ids"]["tts"],
+                "serviceId": pipeline["service_ids"]["tts"],
                 "gender": gender,
                 "speed": speed,
                 "samplingRate": sample_rate,
@@ -276,7 +276,7 @@ def text_to_speech(
             "audio": [{"audioContent": None}],
         },
     }
-    item = _first_output(_compute(body, cfg), "tts")
+    item = _first_output(_compute(body, pipeline), "tts")
     audios = item.get("audio") or []
     if not audios or not audios[0].get("audioContent"):
         raise BhashiniError("Bhashini TTS returned no audio")
@@ -327,11 +327,11 @@ def main(argv: list[str] | None = None) -> int:
             print(text)
             return 0
         if cmd == "check":
-            cfg = _load_config(["asr", "tts"], "as")
+            pipeline = _load_config(["asr", "tts"], "as")
             print("Bhashini configured.")
-            print(f"  endpoint: {cfg['callback_url']}")
-            print(f"  asr serviceId: {cfg['service_ids'].get('asr')}")
-            print(f"  tts serviceId: {cfg['service_ids'].get('tts')}")
+            print(f"  endpoint: {pipeline['callback_url']}")
+            print(f"  asr serviceId: {pipeline['service_ids'].get('asr')}")
+            print(f"  tts serviceId: {pipeline['service_ids'].get('tts')}")
             return 0
     except BhashiniError as e:
         print(f"Bhashini error: {e}", file=sys.stderr)

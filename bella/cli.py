@@ -27,7 +27,7 @@ HELP_TEXT = """Commands:
   /english            Switch back to English
   /flag [correction]  Flag the last Bhashini ASR/TTS result (Assamese eval)
   /good               Mark the last Bhashini result as good
-  /export-bhashini-feedback  Show feedback log location and row count
+  /export-bhashini-feedback  Feedback log row count + export copy path
   /mute, /unmute      Toggle spoken replies for this session
   /help               Show this help
   /exit, /quit        Leave

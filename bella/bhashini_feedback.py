@@ -211,8 +211,9 @@ def try_slash_command(text: str, cfg: dict | None = None) -> str | None:
         return begin_good(cfg)
     if low.startswith("/export-bhashini-feedback"):
         count = export_summary()
-        dest = FEEDBACK_PATH
-        return f"Feedback log: {count} rows in {dest}"
+        export_path = export_records()
+        return (f"Feedback log: {count} rows in {FEEDBACK_PATH}. "
+                f"Copy for sharing: {export_path}")
     return None
 
 

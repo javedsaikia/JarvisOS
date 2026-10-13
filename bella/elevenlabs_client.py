@@ -14,6 +14,7 @@ orb animates from. Asking for MP3 would save bandwidth and break the orb.
 """
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import urllib.error
@@ -95,7 +96,8 @@ def text_to_speech(
     # TimeoutError is NOT a URLError — urllib only wraps a timeout that
     # happens while connecting, so a slow read escapes bare. Same trap
     # that once hung the whole voice loop; see bella/sarvam_client.py.
-    except (urllib.error.URLError, TimeoutError) as e:
+    except (urllib.error.URLError, TimeoutError, http.client.RemoteDisconnected,
+            ConnectionResetError) as e:
         raise ElevenLabsError(f"could not reach ElevenLabs ({e})") from e
     if not pcm:
         raise ElevenLabsError("ElevenLabs returned no audio")
@@ -112,6 +114,7 @@ def voices() -> list[dict]:
         with urllib.request.urlopen(request, timeout=20) as response:
             data = json.loads(response.read())
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
+            http.client.RemoteDisconnected, ConnectionResetError,
             json.JSONDecodeError) as e:
         raise ElevenLabsError(f"could not list voices ({e})") from e
     out = []
